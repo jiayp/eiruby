@@ -2,7 +2,7 @@
 
   sprintf.c -
 
-  $Author$
+  $Author: nobu $
   created at: Fri Oct 15 10:39:26 JST 1993
 
   Copyright (C) 1993-2007 Yukihiro Matsumoto
@@ -1240,7 +1240,7 @@ rb_enc_sprintf(rb_encoding *enc, const char *format, ...)
 VALUE
 rb_vsprintf(const char *fmt, va_list ap)
 {
-    return rb_enc_vsprintf(NULL, fmt, ap);
+    return rb_enc_vsprintf(rb_default_internal_encoding(), fmt, ap);
 }
 
 VALUE
