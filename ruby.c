@@ -1456,6 +1456,15 @@ process_options(int argc, char **argv, struct cmdline_options *opt)
     ruby_set_argv(argc, argv);
     process_sflag(&opt->sflag);
 
+    {
+	long i;
+	VALUE load_path = GET_VM()->load_path;
+	for (i = 0; i < RARRAY_LEN(load_path); ++i) {
+	    RARRAY_ASET(load_path, i,
+			rb_str_encode_ospath(RARRAY_AREF(load_path, i)));
+	}
+	}
+
     toplevel_binding = rb_const_get(rb_cObject, rb_intern("TOPLEVEL_BINDING"));
 
 #define PREPARE_PARSE_MAIN(expr) do { \
@@ -1466,6 +1475,10 @@ process_options(int argc, char **argv, struct cmdline_options *opt)
     th->parse_in_eval++; \
     th->base_block = 0; \
 } while (0)
+    
+    opt->script_name = rb_str_encode_ospath(opt->script_name);
+    opt->script = RSTRING_PTR(opt->script_name);
+    ruby_set_script_name(opt->script_name);
 
     if (opt->e_script) {
 	VALUE progname = rb_progname;
