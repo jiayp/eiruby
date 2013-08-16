@@ -889,6 +889,7 @@ rb_dir_getwd(void)
     path = my_getcwd();
     cwd = rb_tainted_str_new2(path);
     rb_enc_associate(cwd, rb_filesystem_encoding());
+    cwd = rb_str_encode_ospath(cwd);
 
     xfree(path);
     return cwd;
