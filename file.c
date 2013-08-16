@@ -3891,7 +3891,7 @@ rb_file_dirname(VALUE fname)
 	p = root;
     }
     if (p == name)
-	return rb_usascii_str_new2(".");
+	return rb_enc_str_new(".", strlen("."), enc);
 #ifdef DOSISH_DRIVE_LETTER
     if (has_drive_letter(name) && isdirsep(*(name + 2))) {
 	const char *top = skiproot(name + 2, end, enc);
@@ -4244,11 +4244,7 @@ rb_file_truncate(VALUE obj, VALUE len)
     if (!(fptr->mode & FMODE_WRITABLE)) {
 	rb_raise(rb_eIOError, "not opened for writing");
     }
-#ifndef _WIN32
     rb_io_flush(obj);
-#else
-    rb_io_flush_raw(obj, 0);
-#endif
 #ifdef HAVE_FTRUNCATE
     if (ftruncate(fptr->fd, pos) < 0)
 	rb_sys_fail_path(fptr->pathv);
