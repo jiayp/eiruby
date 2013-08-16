@@ -781,7 +781,7 @@ static void token_info_pop(struct parser_params*, const char *token);
 %type <node> mlhs mlhs_head mlhs_basic mlhs_item mlhs_node mlhs_post mlhs_inner
 %type <id>   fsym keyword_variable user_variable sym symbol operation operation2 operation3
 %type <id>   cname fname op f_rest_arg f_block_arg opt_f_block_arg f_norm_arg f_bad_arg
-%type <id>   f_kwrest f_label
+%type <id>   f_kwrest
 /*%%%*/
 /*%
 %type <val> program reswords then do dot_or_colon
@@ -4593,16 +4593,9 @@ f_arg		: f_arg_item
 		    }
 		;
 
-
-f_label 	: tLABEL
+f_kw		: tLABEL arg_value
 		    {
 			arg_var(formal_argument(get_id($1)));
-			$$ = $1;
-		    }
-		;
-
-f_kw		: f_label arg_value
-		    {
 			$$ = assignable($1, $2);
 		    /*%%%*/
 			$$ = NEW_KW_ARG(0, $$);
@@ -4610,8 +4603,9 @@ f_kw		: f_label arg_value
 			$$ = rb_assoc_new($$, $2);
 		    %*/
 		    }
-		| f_label
+		| tLABEL
 		    {
+			arg_var(formal_argument(get_id($1)));
 			$$ = assignable($1, (NODE *)-1);
 		    /*%%%*/
 			$$ = NEW_KW_ARG(0, $$);
@@ -4621,8 +4615,9 @@ f_kw		: f_label arg_value
 		    }
 		;
 
-f_block_kw	: f_label primary_value
+f_block_kw	: tLABEL primary_value
 		    {
+			arg_var(formal_argument(get_id($1)));
 			$$ = assignable($1, $2);
 		    /*%%%*/
 			$$ = NEW_KW_ARG(0, $$);
@@ -4630,8 +4625,9 @@ f_block_kw	: f_label primary_value
 			$$ = rb_assoc_new($$, $2);
 		    %*/
 		    }
-		| f_label
+		| tLABEL
 		    {
+			arg_var(formal_argument(get_id($1)));
 			$$ = assignable($1, (NODE *)-1);
 		    /*%%%*/
 			$$ = NEW_KW_ARG(0, $$);
@@ -4705,9 +4701,9 @@ f_kwrest	: kwrest_mark tIDENTIFIER
 		    }
 		;
 
-f_opt		: f_norm_arg '=' arg_value
+f_opt		: tIDENTIFIER '=' arg_value
 		    {
-			arg_var(get_id($1));
+			arg_var(formal_argument(get_id($1)));
 			$$ = assignable($1, $3);
 		    /*%%%*/
 			$$ = NEW_OPT_ARG(0, $$);
@@ -4717,9 +4713,9 @@ f_opt		: f_norm_arg '=' arg_value
 		    }
 		;
 
-f_block_opt	: f_norm_arg '=' primary_value
+f_block_opt	: tIDENTIFIER '=' primary_value
 		    {
-			arg_var(get_id($1));
+			arg_var(formal_argument(get_id($1)));
 			$$ = assignable($1, $3);
 		    /*%%%*/
 			$$ = NEW_OPT_ARG(0, $$);
@@ -5454,13 +5450,13 @@ NODE*
 rb_compile_string(const char *f, VALUE s, int line)
 {
     must_be_ascii_compatible(s);
-    return parser_compile_string(rb_parser_new(), rb_filesystem_str_new_cstr(f), s, line);
+    return parser_compile_string(rb_parser_new(), rb_enc_str_new(f, strlen(f), rb_default_internal_encoding()), s, line);
 }
 
 NODE*
 rb_parser_compile_string(volatile VALUE vparser, const char *f, VALUE s, int line)
 {
-    return rb_parser_compile_string_path(vparser, rb_filesystem_str_new_cstr(f), s, line);
+    return rb_parser_compile_string_path(vparser, rb_enc_str_new(f, strlen(f), rb_default_internal_encoding()), s, line);
 }
 
 NODE*
@@ -5474,14 +5470,14 @@ NODE*
 rb_compile_cstr(const char *f, const char *s, int len, int line)
 {
     VALUE str = rb_str_new(s, len);
-    return parser_compile_string(rb_parser_new(), rb_filesystem_str_new_cstr(f), str, line);
+    return parser_compile_string(rb_parser_new(), rb_enc_str_new(f, strlen(f), rb_default_internal_encoding()), str, line);
 }
 
 NODE*
 rb_parser_compile_cstr(volatile VALUE vparser, const char *f, const char *s, int len, int line)
 {
     VALUE str = rb_str_new(s, len);
-    return parser_compile_string(vparser, rb_filesystem_str_new_cstr(f), str, line);
+    return parser_compile_string(vparser, rb_enc_str_new(f, strlen(f), rb_default_internal_encoding()), str, line);
 }
 
 static VALUE
@@ -5501,7 +5497,7 @@ rb_compile_file(const char *f, VALUE file, int start)
 NODE*
 rb_parser_compile_file(volatile VALUE vparser, const char *f, VALUE file, int start)
 {
-    return rb_parser_compile_file_path(vparser, rb_filesystem_str_new_cstr(f), file, start);
+    return rb_parser_compile_file_path(vparser, rb_enc_str_new(f, strlen(f), rb_default_internal_encoding()), file, start);
 }
 
 NODE*
