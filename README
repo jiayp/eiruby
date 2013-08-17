@@ -1,3 +1,4 @@
+(中文)
 为了解决一些我自己使用上的一些编码问题，我fork了这个版本。同样也希望能够给遇到类似问题的朋友有所帮助。
 可能有一些实现是quick and dirty的，但我会尝试尽量让实现更通用和正确。
 如果有时间，我会尝试梳理一下ruby的内部编码体系，并尝试进行较彻底的改进。但是我现在还没有找到ruby内部实现的关于的编码方面的设计文档和原则，所以也不太清楚自己的修改是不是合理。
@@ -8,12 +9,12 @@
 * 无论在什么语言的windows系统上，我都可以使用不同的预算的ruby脚本文件，并且不需要做显式的转码操作，自动在内外部交互的边界进行编码的转换。
 
 
-下面的英文是google翻译的，如果有英文好的朋友能帮忙修正一下最好：
-In order to solve some of my own use of some coding problems, I fork in this version. Also hope to be able to encounter similar problems to help a friend.
-There may be some implementation is quick and dirty, but I will try my best to achieve a more general and correct.
-If you have time, I will try to sort out what ruby's internal coding system, and attempt to conduct a more thorough improvement. But I still did not find ruby on the internal implementation of the design documentation and coding principles, so it is not very clear about their modification is not reasonable.
+(English)
+In order to solve some coding problem of my own use, I forked this version, hope this will help others who meet the same problem(s).
+Some code of this repo. may be quick and dirty, but I'll try my best to make this more universal and correct.
+I would try to improve internal coding system of Ruby if I am free, but currently I hadn't found any rules and docs of internal coding system of Ruby, which accounts for the uncertainty of improvements.
 
-I want to achieve the goal:
-* In the Chinese windows system, the internal use utf-8 encoding in the case, no longer need to write ruby code explicit transcoding operations, the underlying automatic transcoding to do, give to the ruby code inside is encoded into the internal coding.
-* In the Chinese windows system, the input and output of Chinese have no problem, not garbled, including all exceptions and error messages.
-* No matter what language the windows system, I can use a different budget ruby script file, and do not need to make explicit transcoding operation, automatic external interaction, including the boundary encoding conversion.
+My goals:
+* In Chinese Windows with UTF-8 internal coding, no longer need to write explicit codes of coding when writing Ruby programs, the Ruby interpreter will do coding works automatically.
+* In Chinese Windows with UTF-8 internal coding, no more unrecognizable characters in inputs and outputs that contain Chinese will be showed, including all of error messages.
+* No matter the language of Windows, no longer need to write explicit codes of coding when writing Ruby programs, converting coding automatically in the border between internal and external.
