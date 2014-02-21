@@ -39,6 +39,7 @@
 #include <share.h>
 #include <shlobj.h>
 #include <mbstring.h>
+#include <shlwapi.h>
 #if _MSC_VER >= 1400
 #include <crtdbg.h>
 #include <rtcapi.h>
@@ -78,6 +79,7 @@ static char *w32_getenv(const char *name, UINT cp);
 #undef fclose
 #undef close
 #undef setsockopt
+#undef dup2
 
 #if defined __BORLANDC__
 #  define _filbuf _fgetc
@@ -604,6 +606,7 @@ static CRITICAL_SECTION select_mutex;
 static int NtSocketsInitialized = 0;
 static st_table *socklist = NULL;
 static st_table *conlist = NULL;
+#define conlist_disabled ((st_table *)-1)
 static char *envarea;
 static char *uenvarea;
 
@@ -629,7 +632,7 @@ free_conlist(st_data_t key, st_data_t val, st_data_t arg)
 static void
 constat_delete(HANDLE h)
 {
-    if (conlist) {
+    if (conlist && conlist != conlist_disabled) {
 	st_data_t key = (st_data_t)h, val;
 	st_delete(conlist, &key, &val);
 	xfree((struct constat *)val);
@@ -649,7 +652,7 @@ exit_handler(void)
 	DeleteCriticalSection(&select_mutex);
 	NtSocketsInitialized = 0;
     }
-    if (conlist) {
+    if (conlist && conlist != conlist_disabled) {
 	st_foreach(conlist, free_conlist, 0);
 	st_free_table(conlist);
 	conlist = NULL;
@@ -1204,7 +1207,7 @@ static char *wstr_to_mbstr(UINT, const WCHAR *, int, long *);
 #define wstr_to_utf8(str, plen) wstr_to_mbstr(CP_UTF8, str, -1, plen)
 
 /* License: Artistic or GPL */
-rb_pid_t
+static rb_pid_t
 w32_spawn(int mode, const char *cmd, const char *prog, UINT cp)
 {
     char fbuf[MAXPATHLEN];
@@ -1343,7 +1346,7 @@ rb_w32_uspawn(int mode, const char *cmd, const char *prog)
 }
 
 /* License: Artistic or GPL */
-rb_pid_t
+static rb_pid_t
 w32_aspawn_flags(int mode, const char *prog, char *const *argv, DWORD flags, UINT cp)
 {
     int c_switch = 0;
@@ -2766,7 +2769,7 @@ is_invalid_handle(SOCKET sock)
 /* License: Artistic or GPL */
 static int
 do_select(int nfds, fd_set *rd, fd_set *wr, fd_set *ex,
-            struct timeval *timeout)
+	  struct timeval *timeout)
 {
     int r = 0;
 
@@ -2910,10 +2913,8 @@ rb_w32_select_with_thread(int nfds, fd_set *rd, fd_set *wr, fd_set *ex,
 
     {
 	struct timeval rest;
-	struct timeval wait;
-	struct timeval zero;
-	wait.tv_sec = 0; wait.tv_usec = 10 * 1000; // 10ms
-	zero.tv_sec = 0; zero.tv_usec = 0;         //  0ms
+	const struct timeval wait = {0, 10 * 1000}; // 10ms
+	struct timeval zero = {0, 0};		    // 0ms
 	for (;;) {
 	    if (th && rb_w32_check_interrupt(th) != WAIT_TIMEOUT) {
 		r = -1;
@@ -2936,7 +2937,7 @@ rb_w32_select_with_thread(int nfds, fd_set *rd, fd_set *wr, fd_set *ex,
 		break;
 	    }
 	    else {
-		struct timeval *dowait = &wait;
+		const struct timeval *dowait = &wait;
 
 		fd_set orig_rd;
 		fd_set orig_wr;
@@ -2962,7 +2963,7 @@ rb_w32_select_with_thread(int nfds, fd_set *rd, fd_set *wr, fd_set *ex,
 		    if (!rb_w32_time_subtract(&rest, &now)) break;
 		    if (compare(&rest, &wait) < 0) dowait = &rest;
 		}
-		Sleep(dowait->tv_sec * 1000 + dowait->tv_usec / 1000);
+		Sleep(dowait->tv_sec * 1000 + (dowait->tv_usec + 999) / 1000);
 	    }
 	}
     }
@@ -4310,9 +4311,6 @@ gettimeofday(struct timeval *tv, struct timezone *tz)
 }
 
 /* License: Ruby's */
-typedef int clockid_t;
-#define CLOCK_REALTIME  0
-#define CLOCK_MONOTONIC 1
 int
 clock_gettime(clockid_t clock_id, struct timespec *sp)
 {
@@ -4342,6 +4340,34 @@ clock_gettime(clockid_t clock_id, struct timespec *sp)
 		sp->tv_nsec = (count.QuadPart % freq.QuadPart) * 1000000000 / freq.QuadPart;
 	    else
 		sp->tv_nsec = (long)((count.QuadPart % freq.QuadPart) * (1000000000.0 / freq.QuadPart));
+	    return 0;
+	}
+      default:
+	errno = EINVAL;
+	return -1;
+    }
+}
+
+/* License: Ruby's */
+int
+clock_getres(clockid_t clock_id, struct timespec *sp)
+{
+    switch (clock_id) {
+      case CLOCK_REALTIME:
+	{
+	    sp->tv_sec = 0;
+	    sp->tv_nsec = 1000;
+	    return 0;
+	}
+      case CLOCK_MONOTONIC:
+	{
+	    LARGE_INTEGER freq;
+	    if (!QueryPerformanceFrequency(&freq)) {
+		errno = map_errno(GetLastError());
+		return -1;
+	    }
+	    sp->tv_sec = 0;
+	    sp->tv_nsec = (long)(1000000000.0 / freq.QuadPart);
 	    return 0;
 	}
       default:
@@ -5440,6 +5466,28 @@ rb_w32_getppid(void)
     return ppid;
 }
 
+STATIC_ASSERT(std_handle, (STD_OUTPUT_HANDLE-STD_INPUT_HANDLE)==(STD_ERROR_HANDLE-STD_OUTPUT_HANDLE));
+
+/* License: Ruby's */
+#define set_new_std_handle(newfd, handle) do { \
+	if ((unsigned)(newfd) > 2) break; \
+	SetStdHandle(STD_INPUT_HANDLE+(STD_OUTPUT_HANDLE-STD_INPUT_HANDLE)*(newfd), \
+		     (handle)); \
+    } while (0)
+#define set_new_std_fd(newfd) set_new_std_handle(newfd, (HANDLE)rb_w32_get_osfhandle(newfd))
+
+/* License: Ruby's */
+int
+rb_w32_dup2(int oldfd, int newfd)
+{
+    int ret;
+
+    if (oldfd == newfd) return newfd;
+    ret = dup2(oldfd, newfd);
+    set_new_std_fd(newfd);
+    return ret;
+}
+
 /* License: Ruby's */
 int
 rb_w32_uopen(const char *file, int oflag, ...)
@@ -5809,13 +5857,41 @@ rb_w32_pipe(int fds[2])
 }
 
 /* License: Ruby's */
+static int
+console_emulator_p(void)
+{
+#ifdef _WIN32_WCE
+    return FALSE;
+#else
+    const void *const func = WriteConsoleW;
+    HMODULE k;
+    MEMORY_BASIC_INFORMATION m;
+
+    memset(&m, 0, sizeof(m));
+    if (!VirtualQuery(func, &m, sizeof(m))) {
+	return FALSE;
+    }
+    k = GetModuleHandle("kernel32.dll");
+    if (!k) return FALSE;
+    return (HMODULE)m.AllocationBase != k;
+#endif
+}
+
+/* License: Ruby's */
 static struct constat *
 constat_handle(HANDLE h)
 {
     st_data_t data;
     struct constat *p;
     if (!conlist) {
+	if (console_emulator_p()) {
+	    conlist = conlist_disabled;
+	    return NULL;
+	}
 	conlist = st_init_numtable();
+    }
+    else if (conlist == conlist_disabled) {
+	return NULL;
     }
     if (st_lookup(conlist, (st_data_t)h, &data)) {
 	p = (struct constat *)data;
@@ -6460,6 +6536,7 @@ rb_w32_write_console(uintptr_t strarg, int fd)
 	return -1L;
 
     s = constat_handle(handle);
+    if (!s) return -1L;
     encindex = ENCODING_GET(str);
     switch (encindex) {
       default:
@@ -6473,6 +6550,7 @@ rb_w32_write_console(uintptr_t strarg, int fd)
 	/* assume UTF-8 */
       case ENCINDEX_UTF_8:
 	ptr = wbuffer = mbstr_to_wstr(CP_UTF8, RSTRING_PTR(str), RSTRING_LEN(str), &len);
+	if (!ptr) return -1L;
 	break;
       case ENCINDEX_UTF_16LE:
 	ptr = (const WCHAR *)RSTRING_PTR(str);
@@ -6887,7 +6965,7 @@ rb_w32_fd_is_text(int fd)
     return _osfile(fd) & FTEXT;
 }
 
-#if RUBY_MSVCRT_VERSION < 80 && !defined(__MINGW64__)
+#if RUBY_MSVCRT_VERSION < 80 && !defined(HAVE__GMTIME64_S)
 /* License: Ruby's */
 static int
 unixtime_to_systemtime(const time_t t, SYSTEMTIME *st)
@@ -6949,7 +7027,11 @@ systemtime_to_localtime(TIME_ZONE_INFORMATION *tz, SYSTEMTIME *gst, SYSTEMTIME *
 }
 #endif
 
-#ifdef __MINGW64__
+#ifdef HAVE__GMTIME64_S
+# ifndef HAVE__LOCALTIME64_S
+/* assume same as _gmtime64_s() */
+#  define HAVE__LOCALTIME64_S 1
+# endif
 # ifndef MINGW_HAS_SECURE_API
    _CRTIMP errno_t __cdecl _gmtime64_s(struct tm* tm, const __time64_t *time);
    _CRTIMP errno_t __cdecl _localtime64_s(struct tm* tm, const __time64_t *time);
@@ -6968,7 +7050,7 @@ gmtime_r(const time_t *tp, struct tm *rp)
 	errno = e;
 	return NULL;
     }
-#if RUBY_MSVCRT_VERSION >= 80 || defined(__MINGW64__)
+#if RUBY_MSVCRT_VERSION >= 80 || defined(HAVE__GMTIME64_S)
     e = gmtime_s(rp, tp);
     if (e != 0) goto error;
 #else
@@ -6992,7 +7074,7 @@ localtime_r(const time_t *tp, struct tm *rp)
 	errno = e;
 	return NULL;
     }
-#if RUBY_MSVCRT_VERSION >= 80 || defined(__MINGW64__)
+#if RUBY_MSVCRT_VERSION >= 80 || defined(HAVE__LOCALTIME64_S)
     e = localtime_s(rp, tp);
     if (e) goto error;
 #else

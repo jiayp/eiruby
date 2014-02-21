@@ -22,7 +22,7 @@
 # 2.
 #   module Error
 #     extend Exception2MessageMapper
-#     def_e2meggage ExistingExceptionClass, "message..."
+#     def_e2message ExistingExceptionClass, "message..."
 #     def_exception :NewExceptionClass, "message..."[, superclass]
 #     ...
 #   end
@@ -170,7 +170,7 @@ module Exception2MessageMapper
 
   E2MM.def_exception(E2MM,
                      :ErrNotRegisteredException,
-                     "not registerd exception(%s)")
+                     "not registered exception(%s)")
 end
 
 

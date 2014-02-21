@@ -152,7 +152,10 @@ class TestDir < Test::Unit::TestCase
 
   def test_glob_recursive
     bug6977 = '[ruby-core:47418]'
+    bug8006 = '[ruby-core:53108] [Bug #8006]'
     Dir.chdir(@root) do
+      assert_include(Dir.glob("a/**/*", File::FNM_DOTMATCH), "a/.", bug8006)
+
       FileUtils.mkdir_p("a/b/c/d/e/f")
       assert_equal(["a/b/c/d/e/f"], Dir.glob("a/**/e/f"), bug6977)
       assert_equal(["a/b/c/d/e/f"], Dir.glob("a/**/d/e/f"), bug6977)
@@ -194,6 +197,13 @@ class TestDir < Test::Unit::TestCase
       end
     ensure
       dir.close
+    end
+  end
+
+  def test_unknown_keywords
+    bug8060 = '[ruby-dev:47152] [Bug #8060]'
+    assert_raise_with_message(ArgumentError, /unknown keyword/, bug8060) do
+      Dir.open(@root, xawqij: "a") {}
     end
   end
 
@@ -239,4 +249,21 @@ class TestDir < Test::Unit::TestCase
     ENV["LOGDIR"] = env_logdir
   end
 
+  def test_symlinks_not_resolved
+    Dir.mktmpdir do |dirname|
+      Dir.chdir(dirname) do
+        begin
+          File.symlink('some-dir', 'dir-symlink')
+        rescue NotImplementedError
+          return
+        end
+
+        Dir.mkdir('some-dir')
+        File.write('some-dir/foo', 'some content')
+
+        assert_equal [ 'dir-symlink', 'some-dir' ], Dir['*'].sort
+        assert_equal [ 'dir-symlink', 'some-dir', 'some-dir/foo' ], Dir['**/*'].sort
+      end
+    end
+  end
 end

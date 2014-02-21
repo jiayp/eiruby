@@ -139,6 +139,7 @@ class TestFile < Test::Unit::TestCase
 
       while size = q1.pop
         assert_equal size, File.size(f.path)
+        assert_equal size, f.size
         q2.push true
       end
     end
@@ -325,9 +326,9 @@ class TestFile < Test::Unit::TestCase
       File.open(tmp, :mode     => IO::RDWR | IO::CREAT | IO::BINARY,
                      :encoding => Encoding::ASCII_8BIT) do |x|
 
-        assert x.autoclose?
+        assert_predicate(x, :autoclose?)
         assert_equal Encoding::ASCII_8BIT, x.external_encoding
-        assert x.write 'hello'
+        x.write 'hello'
 
         x.seek 0, IO::SEEK_SET
 
@@ -338,8 +339,9 @@ class TestFile < Test::Unit::TestCase
   end
 
   def test_file_open_double_mode
-    e = assert_raises(ArgumentError) { File.open("a", 'w', :mode => 'rw+') }
-    assert_equal 'mode specified twice', e.message
+    assert_raise_with_message(ArgumentError, 'mode specified twice') {
+      File.open("a", 'w', :mode => 'rw+')
+    }
   end
 
   def test_conflicting_encodings

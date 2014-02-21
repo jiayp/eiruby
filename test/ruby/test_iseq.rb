@@ -49,8 +49,7 @@ class TestISeq < Test::Unit::TestCase
   def test_unsupport_type
     ary = RubyVM::InstructionSequence.compile("p").to_a
     ary[9] = :foobar
-    e = assert_raise(TypeError) {RubyVM::InstructionSequence.load(ary)}
-    assert_match(/:foobar/, e.message)
+    assert_raise_with_message(TypeError, /:foobar/) {RubyVM::InstructionSequence.load(ary)}
   end if defined?(RubyVM::InstructionSequence.load)
 
   def test_disasm_encoding
@@ -104,7 +103,7 @@ class TestISeq < Test::Unit::TestCase
     iseq = ISeq.of(method(:test_location))
 
     assert_equal(__FILE__, iseq.path)
-    assert(/#{__FILE__}/ =~ iseq.absolute_path)
+    assert_match(/#{__FILE__}/, iseq.absolute_path)
     assert_equal("test_location", iseq.label)
     assert_equal("test_location", iseq.base_label)
     assert_equal(LINE_OF_HERE+1, iseq.first_lineno)
@@ -112,9 +111,17 @@ class TestISeq < Test::Unit::TestCase
     line = __LINE__
     iseq = ISeq.of(Proc.new{})
     assert_equal(__FILE__, iseq.path)
-    assert(/#{__FILE__}/ =~ iseq.absolute_path)
+    assert_match(/#{__FILE__}/, iseq.absolute_path)
     assert_equal("test_location", iseq.base_label)
     assert_equal("block in test_location", iseq.label)
     assert_equal(line+1, iseq.first_lineno)
+  end
+
+  def test_label_fstring
+    c = Class.new{ def foobar() end }
+
+    a, b = eval("# encoding: us-ascii\n'foobar'.freeze"),
+           ISeq.of(c.instance_method(:foobar)).label
+    assert_same a, b
   end
 end

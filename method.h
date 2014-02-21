@@ -11,8 +11,10 @@
 #ifndef METHOD_H
 #define METHOD_H
 
+#include "internal.h"
+
 #ifndef END_OF_ENUMERATION
-# ifdef __GNUC__
+# if defined(__GNUC__) &&! defined(__STRICT_ANSI__)
 #   define END_OF_ENUMERATION(key)
 # else
 #   define END_OF_ENUMERATION(key) END_OF_##key##_PLACEHOLDER = 0
@@ -113,7 +115,7 @@ rb_method_entry_t *rb_method_entry(VALUE klass, ID id, VALUE *define_class_ptr);
 rb_method_entry_t *rb_method_entry_at(VALUE obj, ID id);
 void rb_add_refined_method_entry(VALUE refined_class, ID mid);
 rb_method_entry_t *rb_resolve_refined_method(VALUE refinements,
-					     rb_method_entry_t *me,
+					     const rb_method_entry_t *me,
 					     VALUE *defined_class_ptr);
 rb_method_entry_t *rb_method_entry_with_refinements(VALUE klass, ID id,
 						    VALUE *defined_class_ptr);
@@ -134,6 +136,7 @@ VALUE rb_obj_method_location(VALUE obj, ID id);
 void rb_mark_method_entry(const rb_method_entry_t *me);
 void rb_free_method_entry(rb_method_entry_t *me);
 void rb_sweep_method_entry(void *vm);
-void rb_free_m_table(st_table *tbl);
+void rb_free_m_tbl(st_table *tbl);
+void rb_free_m_tbl_wrapper(struct method_table_wrapper *wrapper);
 
 #endif /* METHOD_H */

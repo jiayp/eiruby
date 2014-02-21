@@ -22,7 +22,7 @@ class TestEncoding < Test::Unit::TestCase
     aliases.each do |a, en|
       e = Encoding.find(a)
       assert_equal(e.name, en)
-      assert(e.names.include?(a))
+      assert_include(e.names, a)
     end
   end
 
@@ -85,8 +85,8 @@ class TestEncoding < Test::Unit::TestCase
   def test_aliases
     assert_instance_of(Hash, Encoding.aliases)
     Encoding.aliases.each do |k, v|
-      assert(Encoding.name_list.include?(k))
-      assert(Encoding.name_list.include?(v))
+      assert_include(Encoding.name_list, k)
+      assert_include(Encoding.name_list, v)
       assert_instance_of(String, k)
       assert_instance_of(String, v)
     end
@@ -107,5 +107,14 @@ class TestEncoding < Test::Unit::TestCase
     bin = "a".force_encoding(Encoding::ASCII_8BIT)
     asc = "b".force_encoding(Encoding::US_ASCII)
     assert_equal(Encoding::ASCII_8BIT, Encoding.compatible?(bin, asc))
+  end
+
+  def test_errinfo_after_autoload
+    bug9038 = '[ruby-core:57949] [Bug #9038]'
+    assert_separately(%w[--disable=gems], <<-"end;")
+      assert_raise_with_message(SyntaxError, /unknown regexp option - Q/, #{bug9038.dump}) {
+        eval("/regexp/sQ")
+      }
+    end;
   end
 end

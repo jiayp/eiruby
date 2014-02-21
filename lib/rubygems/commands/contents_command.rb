@@ -45,6 +45,14 @@ class Gem::Commands::ContentsCommand < Gem::Command
     "--no-lib-only --prefix"
   end
 
+  def description # :nodoc:
+    <<-EOF
+The contents command lists the files in an installed gem.  The listing can
+be given as full file names, file names without the installed directory
+prefix or only the files that are requireable.
+    EOF
+  end
+
   def usage # :nodoc:
     "#{program_name} GEMNAME [GEMNAME ...]"
   end
@@ -86,11 +94,11 @@ class Gem::Commands::ContentsCommand < Gem::Command
     spec.files.sort.map do |file|
       case file
       when /\A#{spec.bindir}\//
-        [Gem::ConfigMap[:bindir], $POSTMATCH]
+        [RbConfig::CONFIG['bindir'], $POSTMATCH]
       when /\.so\z/
-        [Gem::ConfigMap[:archdir], file]
+        [RbConfig::CONFIG['archdir'], file]
       else
-        [Gem::ConfigMap[:rubylibdir], file]
+        [RbConfig::CONFIG['rubylibdir'], file]
       end
     end
   end

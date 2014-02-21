@@ -574,7 +574,7 @@ fdbm_invert(VALUE obj)
 static VALUE fdbm_store(VALUE,VALUE,VALUE);
 
 static VALUE
-update_i(VALUE pair, VALUE dbm)
+update_i(RB_BLOCK_CALL_FUNC_ARGLIST(pair, dbm))
 {
     Check_Type(pair, T_ARRAY);
     if (RARRAY_LEN(pair) < 2) {
@@ -1011,7 +1011,7 @@ fdbm_reject(VALUE obj)
  * == Example
  *
  *  require 'dbm'
- *  db = DBM.open('rfcs', 666, DBM::CREATRW)
+ *  db = DBM.open('rfcs', 666, DBM::WRCREAT)
  *  db['822'] = 'Standard for the Format of ARPA Internet Text Messages'
  *  db['1123'] = 'Requirements for Internet Hosts - Application and Support'
  *  db['3068'] = 'An Anycast Prefix for 6to4 Relay Routers'

@@ -1098,7 +1098,7 @@ SRC
         # TODO: non-worse way than this hack, to get rid of separating
         # option and its argument.
         $LDFLAGS << " -ObjC" unless /(\A|\s)-ObjC(\s|\z)/ =~ $LDFLAGS
-        $LDFLAGS << opt
+        $LIBS << opt
         true
       else
         false
@@ -1849,6 +1849,7 @@ VPATH = #{vpath.join(CONFIG['PATH_SEPARATOR'])}
     prefix = mkintpath(CONFIG["prefix"])
     if destdir = prefix[$dest_prefix_pattern, 1]
       mk << "\nDESTDIR = #{destdir}\n"
+      prefix = prefix[destdir.size..-1]
     end
     mk << "prefix = #{with_destdir(prefix).unspace}\n"
     CONFIG.each do |key, var|
@@ -2357,7 +2358,7 @@ site-install-rb: install-rb
       mfile.print "$(ECHO) linking static-library $(@#{rsep})\n\t$(Q) "
       mfile.print "$(AR) #{config_string('ARFLAGS') || 'cru '}$@ $(OBJS)"
       config_string('RANLIB') do |ranlib|
-        mfile.print "\n\t-$(Q)#{ranlib} $(DLLIB) 2> /dev/null || true"
+        mfile.print "\n\t-$(Q)#{ranlib} $(@) 2> /dev/null || true"
       end
     end
     mfile.print "\n\n"

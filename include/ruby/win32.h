@@ -126,7 +126,7 @@ typedef unsigned int uintptr_t;
 
 typedef int clockid_t;
 #define CLOCK_REALTIME  0
-#define CLOCK_MONOTINIC 1
+#define CLOCK_MONOTONIC 1
 
 #undef getc
 #undef putc
@@ -317,6 +317,7 @@ extern int link(const char *, const char *);
 extern int rb_w32_ulink(const char *, const char *);
 extern int gettimeofday(struct timeval *, struct timezone *);
 extern int clock_gettime(clockid_t, struct timespec *);
+extern int clock_getres(clockid_t, struct timespec *);
 extern rb_pid_t waitpid (rb_pid_t, int *, int);
 extern rb_pid_t rb_w32_spawn(int, const char *, const char*);
 extern rb_pid_t rb_w32_aspawn(int, const char *, char *const *);
@@ -345,6 +346,7 @@ extern int rb_w32_access(const char *, int);
 extern int rb_w32_uaccess(const char *, int);
 extern char rb_w32_fd_is_text(int);
 extern int rb_w32_fstati64(int, struct stati64 *);
+extern int rb_w32_dup2(int, int);
 
 #ifdef __BORLANDC__
 extern off_t _lseeki64(int, off_t, int);
@@ -354,6 +356,20 @@ extern FILE *rb_w32_fsopen(const char *, const char *, int);
 #endif
 
 #include <float.h>
+
+#if defined _MSC_VER && _MSC_VER >= 1800 && defined INFINITY
+#pragma warning(push)
+#pragma warning(disable:4756)
+static inline float
+rb_infinity_float(void)
+{
+    return INFINITY;
+}
+#pragma warning(pop)
+#undef INFINITY
+#define INFINITY rb_infinity_float()
+#endif
+
 #if !defined __MINGW32__ || defined __NO_ISOCEXT
 #ifndef isnan
 #define isnan(x) _isnan(x)
@@ -371,6 +387,8 @@ scalb(double a, long b)
 {
     return _scalb(a, b);
 }
+#else
+__declspec(dllimport) extern int finite(double);
 #endif
 
 #if !defined S_IFIFO && defined _S_IFIFO
@@ -455,6 +473,8 @@ extern rb_gid_t  getgid (void);
 extern rb_gid_t  getegid (void);
 extern int       setuid (rb_uid_t);
 extern int       setgid (rb_gid_t);
+
+extern int fstati64(int, struct stati64 *);
 
 extern char *rb_w32_strerror(int);
 
@@ -715,6 +735,9 @@ extern char *rb_w32_strerror(int);
 
 #undef times
 #define times(t)		rb_w32_times(t)
+
+#undef dup2
+#define dup2(o, n)		rb_w32_dup2(o, n)
 #endif
 
 struct tms {

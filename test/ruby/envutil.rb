@@ -124,8 +124,8 @@ module EnvUtil
   end
   module_function :suppress_warning
 
-  def under_gc_stress
-    stress, GC.stress = GC.stress, true
+  def under_gc_stress(stress = true)
+    stress, GC.stress = GC.stress, stress
     yield
   ensure
     GC.stress = stress
@@ -155,6 +155,34 @@ module EnvUtil
     $VERBOSE = verbose
   end
   module_function :with_default_internal
+
+  if /darwin/ =~ RUBY_PLATFORM
+    DIAGNOSTIC_REPORTS_PATH = File.expand_path("~/Library/Logs/DiagnosticReports")
+    DIAGNOSTIC_REPORTS_TIMEFORMAT = '%Y-%m-%d-%H%M%S'
+    def self.diagnostic_reports(signame, cmd, pid, now)
+      return unless %w[ABRT QUIT SEGV ILL].include?(signame)
+      cmd = File.basename(cmd)
+      path = DIAGNOSTIC_REPORTS_PATH
+      timeformat = DIAGNOSTIC_REPORTS_TIMEFORMAT
+      pat = "#{path}/#{cmd}_#{now.strftime(timeformat)}[-_]*.crash"
+      first = true
+      30.times do
+        first ? (first = false) : sleep(0.1)
+        Dir.glob(pat) do |name|
+          log = File.read(name) rescue next
+          if /\AProcess:\s+#{cmd} \[#{pid}\]$/ =~ log
+            File.unlink(name)
+            File.unlink("#{path}/.#{File.basename(name)}.plist")
+            return log
+          end
+        end
+      end
+      nil
+    end
+  else
+    def self.diagnostic_reports(signame, cmd, pid, now)
+    end
+  end
 end
 
 module Test
@@ -215,16 +243,18 @@ module Test
         else
           child_env = []
         end
-        out, _, status = EnvUtil.invoke_ruby(child_env + %W'-W0', testsrc, true, :merge_to_stdout, opt)
+        out, _, status = EnvUtil.invoke_ruby(child_env + %W'-W0', testsrc, true, :merge_to_stdout, **opt)
         assert !status.signaled?, FailDesc[status, message, out]
       end
 
       FailDesc = proc do |status, message = "", out = ""|
         pid = status.pid
+        now = Time.now
         faildesc = proc do
           signo = status.termsig
           signame = Signal.signame(signo)
           sigdesc = "signal #{signo}"
+          log = EnvUtil.diagnostic_reports(signame, EnvUtil.rubybin, pid, now)
           if signame
             sigdesc = "SIG#{signame} (#{sigdesc})"
           end
@@ -240,13 +270,19 @@ module Test
             full_message << "\n#{out.gsub(/^/, '| ')}"
             full_message << "\n" if /\n\z/ !~ full_message
           end
+          if log
+            full_message << "\n#{log.gsub(/^/, '| ')}"
+          end
           full_message
         end
         faildesc
       end
 
       def assert_in_out_err(args, test_stdin = "", test_stdout = [], test_stderr = [], message = nil, **opt)
-        stdout, stderr, status = EnvUtil.invoke_ruby(args, test_stdin, true, true, opt)
+        stdout, stderr, status = EnvUtil.invoke_ruby(args, test_stdin, true, true, **opt)
+        if signo = status.termsig
+          EnvUtil.diagnostic_reports(Signal.signame(signo), EnvUtil.rubybin, status.pid, Time.now)
+        end
         if block_given?
           raise "test_stdout ignored, use block only or without block" if test_stdout != []
           raise "test_stderr ignored, use block only or without block" if test_stderr != []
@@ -271,7 +307,7 @@ module Test
       end
 
       def assert_ruby_status(args, test_stdin="", message=nil, **opt)
-        out, _, status = EnvUtil.invoke_ruby(args, test_stdin, true, :merge_to_stdout, opt)
+        out, _, status = EnvUtil.invoke_ruby(args, test_stdin, true, :merge_to_stdout, **opt)
         assert(!status.signaled?, FailDesc[status, message, out])
         message ||= "ruby exit status is not success:"
         assert(status.success?, "#{message} (#{status.inspect})")
@@ -288,18 +324,18 @@ module Test
         line -= 2
         src = <<eom
 # -*- coding: #{src.encoding}; -*-
-  require #{__dir__.dump}'/envutil';include Test::Unit::Assertions;begin
-#{src}
-  ensure
+  require #{__dir__.dump}'/envutil';include Test::Unit::Assertions
+  END {
     puts [Marshal.dump($!)].pack('m'), "assertions=\#{self._assertions}"
-  end
+  }
+#{src}
   class Test::Unit::Runner
     @@stop_auto_run = true
   end
 eom
         args = args.dup
-        args.insert((Hash === args.first ? 1 : 0), *$:.map {|l| "-I#{l}"})
-        stdout, stderr, status = EnvUtil.invoke_ruby(args, src, true, true, opt)
+        args.insert((Hash === args.first ? 1 : 0), "--disable=gems", *$:.map {|l| "-I#{l}"})
+        stdout, stderr, status = EnvUtil.invoke_ruby(args, src, true, true, **opt)
         abort = status.coredump? || (status.signaled? && ABORT_SIGNALS.include?(status.termsig))
         assert(!abort, FailDesc[status, stderr])
         self._assertions += stdout[/^assertions=(\d+)/, 1].to_i
@@ -309,8 +345,10 @@ eom
           ignore_stderr = nil
         end
         if res
-          res.backtrace.each do |l|
-            l.sub!(/\A-:(\d+)/){"#{file}:#{line + $1.to_i}"}
+          if bt = res.backtrace
+            bt.each do |l|
+              l.sub!(/\A-:(\d+)/){"#{file}:#{line + $1.to_i}"}
+            end
           end
           raise res
         end
@@ -334,23 +372,25 @@ eom
         assert_warning(*args) {$VERBOSE = false; yield}
       end
 
-      def assert_no_memory_leak(args, prepare, code, message=nil, limit: 1.5)
+      def assert_no_memory_leak(args, prepare, code, message=nil, limit: 1.5, **opt)
         token = "\e[7;1m#{$$.to_s}:#{Time.now.strftime('%s.%L')}:#{rand(0x10000).to_s(16)}:\e[m"
         token_dump = token.dump
         token_re = Regexp.quote(token)
+        envs = args.shift if Array === args and Hash === args.first
         args = [
           "--disable=gems",
           "-r", File.expand_path("../memory_status", __FILE__),
           *args,
           "-v", "-",
         ]
+        args.unshift(envs) if envs
         cmd = [
           'END {STDERR.puts '"#{token_dump}"'"FINAL=#{Memory::Status.new.size}"}',
           prepare,
           'STDERR.puts('"#{token_dump}"'"START=#{$initial_size = Memory::Status.new.size}")',
           code,
         ].join("\n")
-        _, err, status = EnvUtil.invoke_ruby(args, cmd, true, true)
+        _, err, status = EnvUtil.invoke_ruby(args, cmd, true, true, **opt)
         before = err.sub!(/^#{token_re}START=(\d+)\n/, '') && $1.to_i
         after = err.sub!(/^#{token_re}FINAL=(\d+)\n/, '') && $1.to_i
         assert_equal([true, ""], [status.success?, err], message)
@@ -375,8 +415,8 @@ eom
           result = File.__send__(predicate, *args)
           result = !result if neg
           mesg = "Expected file " << args.shift.inspect
-          mesg << mu_pp(args) unless args.empty?
           mesg << "#{neg} to be #{predicate}"
+          mesg << mu_pp(args).sub(/\A\[(.*)\]\z/m, '(\1)') unless args.empty?
           mesg << " #{failure_message}" if failure_message
           assert(result, mesg)
         end

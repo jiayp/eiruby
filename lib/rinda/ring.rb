@@ -212,7 +212,7 @@ module Rinda
     # address of the local TupleSpace.
 
     def do_reply
-      tuple = @ts.take([:lookup_ring, DRbObject], @renewer)
+      tuple = @ts.take([:lookup_ring, nil], @renewer)
       Thread.new { tuple[1].call(@ts) rescue nil}
     rescue
     end
@@ -413,9 +413,8 @@ module Rinda
       soc = Socket.new(addrinfo.pfamily, addrinfo.socktype, addrinfo.protocol)
 
       if addrinfo.ipv4_multicast? then
-        soc.setsockopt(:IPPROTO_IP, :IP_MULTICAST_LOOP, true)
-        soc.setsockopt(:IPPROTO_IP, :IP_MULTICAST_TTL,
-                       [@multicast_hops].pack('c'))
+        soc.setsockopt(Socket::Option.ipv4_multicast_loop(1))
+        soc.setsockopt(Socket::Option.ipv4_multicast_ttl(@multicast_hops))
       elsif addrinfo.ipv6_multicast? then
         soc.setsockopt(:IPPROTO_IPV6, :IPV6_MULTICAST_LOOP, true)
         soc.setsockopt(:IPPROTO_IPV6, :IPV6_MULTICAST_HOPS,

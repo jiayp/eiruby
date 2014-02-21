@@ -552,7 +552,7 @@ module URI
     protected :set_password
 
     # returns the userinfo +ui+ as user, password
-    # if properly formated as 'user:password'
+    # if properly formatted as 'user:password'
     def split_userinfo(ui)
       return nil, nil unless ui
       user, password = ui.split(/:/, 2)
@@ -672,7 +672,7 @@ module URI
     # u.hostname = "::1"
     # p u.to_s                  #=> "http://[::1]/bar"
     #
-    # If the arugument seems IPv6 address,
+    # If the argument seems IPv6 address,
     # it is wrapped by brackets.
     #
     def hostname=(v)
@@ -1647,31 +1647,29 @@ module URI
         proxy_uri = ENV[name] || ENV[name.upcase]
       end
 
-      if proxy_uri && self.hostname
+      if proxy_uri.nil? || proxy_uri.empty?
+        return nil
+      end
+
+      if self.hostname
         require 'socket'
         begin
           addr = IPSocket.getaddress(self.hostname)
-          proxy_uri = nil if /\A127\.|\A::1\z/ =~ addr
+          return nil if /\A127\.|\A::1\z/ =~ addr
         rescue SocketError
         end
       end
 
-      if proxy_uri
-        proxy_uri = URI.parse(proxy_uri)
-        name = 'no_proxy'
-        if no_proxy = ENV[name] || ENV[name.upcase]
-          no_proxy.scan(/([^:,]*)(?::(\d+))?/) {|host, port|
-            if /(\A|\.)#{Regexp.quote host}\z/i =~ self.host &&
-               (!port || self.port == port.to_i)
-              proxy_uri = nil
-              break
-            end
-          }
-        end
-        proxy_uri
-      else
-        nil
+      name = 'no_proxy'
+      if no_proxy = ENV[name] || ENV[name.upcase]
+        no_proxy.scan(/([^:,]*)(?::(\d+))?/) {|host, port|
+          if /(\A|\.)#{Regexp.quote host}\z/i =~ self.host &&
+            (!port || self.port == port.to_i)
+            return nil
+          end
+        }
       end
+      URI.parse(proxy_uri)
     end
   end
 end

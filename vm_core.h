@@ -109,7 +109,11 @@
 #define UNLIKELY(x) (x)
 #endif /* __GNUC__ >= 3 */
 
-#if (defined(__clang__) && (__clang_major__ == 4 && __clang_minor__ == 2))
+#ifndef __has_attribute
+# define __has_attribute(x) 0
+#endif
+
+#if __has_attribute(unused)
 #define UNINITIALIZED_VAR(x) x __attribute__((unused))
 #elif defined(__GNUC__) && __GNUC__ >= 3
 #define UNINITIALIZED_VAR(x) x = x
@@ -125,13 +129,22 @@ struct iseq_compile_data_ensure_node_stack;
 
 typedef struct rb_compile_option_struct rb_compile_option_t;
 
+
 struct iseq_inline_cache_entry {
-    VALUE ic_vmstat;
-    VALUE ic_class;
+    rb_serial_t ic_serial;
     union {
+	size_t index;
 	VALUE value;
-	long index;
     } ic_value;
+};
+
+union iseq_inline_storage_entry {
+    struct {
+	struct rb_thread_struct *running_thread;
+	VALUE value;
+	VALUE done;
+    } once;
+    struct iseq_inline_cache_entry cache;
 };
 
 /* to avoid warning */
@@ -147,7 +160,8 @@ typedef struct rb_call_info_struct {
     rb_iseq_t *blockiseq;
 
     /* inline cache: keys */
-    VALUE vmstat;
+    rb_serial_t method_state;
+    rb_serial_t class_serial;
     VALUE klass;
 
     /* inline cache: values */
@@ -224,8 +238,8 @@ struct rb_iseq_struct {
     /* sizeof(vars) + 1 */
     int local_size;
 
-    struct iseq_inline_cache_entry *ic_entries;
-    int ic_size;
+    union iseq_inline_storage_entry *is_entries;
+    int is_size;
 
     rb_call_info_t *callinfo_entries;
     int callinfo_size;
@@ -373,7 +387,12 @@ typedef struct rb_vm_struct {
     /* hook */
     rb_hook_list_t event_hooks;
 
-    struct rb_postponed_job_struct *postponed_job;
+    /* relation table of ensure - rollback for callcc */
+    struct st_table *ensure_rollback_table;
+
+    /* postponed_job */
+    struct rb_postponed_job_struct *postponed_job_buffer;
+    int postponed_job_index;
 
     int src_encoding_index;
 
@@ -381,6 +400,8 @@ typedef struct rb_vm_struct {
     VALUE coverages;
 
     struct unlinked_method_entry_list_entry *unlinked_method_entry_list;
+
+    VALUE defined_module_hash;
 
 #if defined(ENABLE_VM_OBJSPACE) && ENABLE_VM_OBJSPACE
     struct rb_objspace *objspace;
@@ -488,6 +509,17 @@ typedef struct rb_thread_list_struct{
     struct rb_thread_struct *th;
 } rb_thread_list_t;
 
+
+typedef struct rb_ensure_entry {
+    VALUE marker;
+    VALUE (*e_proc)(ANYARGS);
+    VALUE data2;
+} rb_ensure_entry_t;
+
+typedef struct rb_ensure_list {
+    struct rb_ensure_list *next;
+    struct rb_ensure_entry entry;
+} rb_ensure_list_t;
 
 typedef struct rb_thread_struct {
     VALUE self;
@@ -608,6 +640,9 @@ typedef struct rb_thread_struct {
     VALUE root_fiber;
     rb_jmpbuf_t root_jmpbuf;
 
+    /* ensure & callcc */
+    rb_ensure_list_t *ensure_list;
+
     /* misc */
     int method_missing_reason;
     int abort_on_exception;
@@ -622,7 +657,7 @@ typedef enum {
     VM_DEFINECLASS_TYPE_SINGLETON_CLASS = 0x01,
     VM_DEFINECLASS_TYPE_MODULE          = 0x02,
     /* 0x03..0x06 is reserved */
-    VM_DEFINECLASS_TYPE_MASK            = 0x07,
+    VM_DEFINECLASS_TYPE_MASK            = 0x07
 } rb_vm_defineclass_type_t;
 
 #define VM_DEFINECLASS_TYPE(x) ((rb_vm_defineclass_type_t)(x) & VM_DEFINECLASS_TYPE_MASK)
@@ -650,7 +685,6 @@ VALUE rb_iseq_compile_with_option(VALUE src, VALUE file, VALUE absolute_path, VA
 VALUE rb_iseq_disasm(VALUE self);
 int rb_iseq_disasm_insn(VALUE str, VALUE *iseqval, size_t pos, rb_iseq_t *iseq, VALUE child);
 const char *ruby_node_name(int node);
-int rb_iseq_first_lineno(const rb_iseq_t *iseq);
 
 RUBY_EXTERN VALUE rb_cISeq;
 RUBY_EXTERN VALUE rb_cRubyVM;
@@ -806,7 +840,7 @@ VALUE rb_proc_alloc(VALUE klass);
 
 /* for debug */
 extern void rb_vmdebug_stack_dump_raw(rb_thread_t *, rb_control_frame_t *);
-extern void rb_vmdebug_debug_print_pre(rb_thread_t *th, rb_control_frame_t *cfp);
+extern void rb_vmdebug_debug_print_pre(rb_thread_t *th, rb_control_frame_t *cfp, VALUE *_pc);
 extern void rb_vmdebug_debug_print_post(rb_thread_t *th, rb_control_frame_t *cfp);
 
 #define SDR() rb_vmdebug_stack_dump_raw(GET_THREAD(), GET_THREAD()->cfp)
@@ -855,13 +889,17 @@ int rb_autoloading_value(VALUE mod, ID id, VALUE* value);
 
 #define sysstack_error GET_VM()->special_exceptions[ruby_error_sysstack]
 
-#define CHECK_VM_STACK_OVERFLOW0(cfp, sp, margin) do { \
-    if ((VALUE *)((char *)((VALUE *)(sp) + (margin)) + sizeof(rb_control_frame_t)) >= ((VALUE *)(cfp))) { \
-	vm_stackoverflow(); \
-    } \
-} while (0)
-
-#define CHECK_VM_STACK_OVERFLOW(cfp, margin) CHECK_VM_STACK_OVERFLOW0((cfp), (cfp)->sp, margin)
+#define RUBY_CONST_ASSERT(expr) (1/!!(expr)) /* expr must be a compile-time constant */
+#define VM_STACK_OVERFLOWED_P(cfp, sp, margin) \
+    (!RUBY_CONST_ASSERT(sizeof(*(sp)) == sizeof(VALUE)) || \
+     !RUBY_CONST_ASSERT(sizeof(*(cfp)) == sizeof(rb_control_frame_t)) || \
+     ((rb_control_frame_t *)((sp) + (margin)) + 1) >= (cfp))
+#define WHEN_VM_STACK_OVERFLOWED(cfp, sp, margin) \
+    if (LIKELY(!VM_STACK_OVERFLOWED_P(cfp, sp, margin))) {(void)0;} else /* overflowed */
+#define CHECK_VM_STACK_OVERFLOW0(cfp, sp, margin) \
+    WHEN_VM_STACK_OVERFLOWED(cfp, sp, margin) vm_stackoverflow()
+#define CHECK_VM_STACK_OVERFLOW(cfp, margin) \
+    WHEN_VM_STACK_OVERFLOWED(cfp, (cfp)->sp, margin) vm_stackoverflow()
 
 /* for thread */
 

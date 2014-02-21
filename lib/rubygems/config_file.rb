@@ -5,6 +5,7 @@
 #++
 
 require 'rubygems/user_interaction'
+require 'rbconfig'
 
 ##
 # Gem::ConfigFile RubyGems options and gem command options from gemrc.
@@ -136,9 +137,10 @@ class Gem::ConfigFile
   attr_reader :ssl_verify_mode
 
   ##
-  # Path name of directory or file of openssl CA certificate, used for remote https connection
+  # Path name of directory or file of openssl CA certificate, used for remote
+  # https connection
 
-  attr_reader :ssl_ca_cert
+  attr_accessor :ssl_ca_cert
 
   ##
   # Path name of directory or file of openssl client certificate, used for remote https connection with client authentication

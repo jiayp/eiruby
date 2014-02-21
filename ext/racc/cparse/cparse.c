@@ -192,7 +192,7 @@ static VALUE racc_yyparse _((VALUE parser, VALUE lexer, VALUE lexmid,
                              VALUE arg, VALUE sysdebug));
 
 static void call_lexer _((struct cparse_params *v));
-static VALUE lexer_i _((VALUE block_args, VALUE data, VALUE self));
+static VALUE lexer_i _((RB_BLOCK_CALL_FUNC_ARGLIST(block_args, data)));
 
 static VALUE assert_array _((VALUE a));
 static long assert_integer _((VALUE n));
@@ -282,7 +282,7 @@ call_lexer(struct cparse_params *v)
 #endif
 
 static VALUE
-lexer_i(VALUE block_args, VALUE data, VALUE self)
+lexer_i(RB_BLOCK_CALL_FUNC_ARGLIST(block_args, data))
 {
     struct cparse_params *v;
     VALUE tok, val;
@@ -418,10 +418,10 @@ extract_user_token(struct cparse_params *v, VALUE block_args,
 
     if (!RB_TYPE_P(block_args, T_ARRAY)) {
         rb_raise(rb_eTypeError,
-                 "%s() %s %s (must be Array[2])",
+                 "%s() %s %"PRIsVALUE" (must be Array[2])",
                  v->lex_is_iterator ? rb_id2name(v->lexmid) : "next_token",
                  v->lex_is_iterator ? "yielded" : "returned",
-                 rb_class2name(CLASS_OF(block_args)));
+                 rb_obj_class(block_args));
     }
     if (RARRAY_LEN(block_args) != 2) {
         rb_raise(rb_eArgError,

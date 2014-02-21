@@ -27,6 +27,8 @@ module Test
       def assert(test, *msgs)
         case msg = msgs.first
         when String, Proc
+        when nil
+          msgs.shift
         else
           bt = caller.reject { |s| s.start_with?(MINI_DIR) }
           raise ArgumentError, "assertion message must be String or Proc, but #{msg.class} was given.", bt
@@ -52,7 +54,7 @@ module Test
       #   assert_raise( *args, &block )
       #
       #Tests if the given block raises an exception. Acceptable exception
-      #types maye be given as optional arguments. If the last argument is a
+      #types may be given as optional arguments. If the last argument is a
       #String, it will be used as the error message.
       #
       #    assert_raise do #Fails, no Exceptions are raised
@@ -86,7 +88,7 @@ module Test
       #    assert_raise_with_message(RuntimeError, "foo") do
       #      raise "foo" #Raises RuntimeError with the message, so assertion succeeds
       #    end
-      def assert_raise_with_message(exception, expected, msg = nil)
+      def assert_raise_with_message(exception, expected, msg = nil, &block)
         case expected
         when String
           assert = :assert_equal
@@ -96,9 +98,17 @@ module Test
           raise TypeError, "Expected #{expected.inspect} to be a kind of String or Regexp, not #{expected.class}"
         end
 
-        ex = assert_raise(exception, msg) {yield}
+        ex = assert_raise(exception, *msg) {yield}
         msg = message(msg, "") {"Expected Exception(#{exception}) was raised, but the message doesn't match"}
-        __send__(assert, expected, ex.message, msg)
+
+        if assert == :assert_equal
+          assert_equal(expected, ex.message, msg)
+        else
+          msg = message(msg) { "Expected #{mu_pp expected} to match #{mu_pp ex.message}" }
+          assert expected =~ ex.message, msg
+          block.binding.eval("proc{|_|$~=_}").call($~)
+        end
+        ex
       end
 
       # :call-seq:
@@ -149,7 +159,8 @@ module Test
       # :call-seq:
       #   assert_nothing_thrown( failure_message = nil, &block )
       #
-      #Fails if the given block uses a call to Kernel#throw.
+      #Fails if the given block uses a call to Kernel#throw, and
+      #returns the result of the block otherwise.
       #
       #An optional failure message may be provided as the final argument.
       #
@@ -158,13 +169,33 @@ module Test
       #    end
       def assert_nothing_thrown(msg=nil)
         begin
-          yield
+          ret = yield
         rescue ArgumentError => error
           raise error if /\Auncaught throw (.+)\z/m !~ error.message
           msg = message(msg) { "<#{$1}> was thrown when nothing was expected" }
           flunk(msg)
         end
         assert(true, "Expected nothing to be thrown")
+        ret
+      end
+
+      # :call-seq:
+      #   assert_throw( tag, failure_message = nil, &block )
+      #
+      #Fails unless the given block throws +tag+, returns the caught
+      #value otherwise.
+      #
+      #An optional failure message may be provided as the final argument.
+      #
+      #    tag = Object.new
+      #    assert_throw(tag, "#{tag} was not thrown!") do
+      #      throw tag
+      #    end
+      def assert_throw(tag, msg = nil)
+        catch(tag) do
+          yield(tag)
+          assert(false, message(msg) {"Expected #{mu_pp(tag)} to have been thrown"})
+        end
       end
 
       # :call-seq:
@@ -304,8 +335,8 @@ EOT
       # * Arguments to the method
       #
       # Example:
-      #   assert_send([[1, 2], :member?, 1]) # -> pass
-      #   assert_send([[1, 2], :member?, 4]) # -> fail
+      #   assert_send(["Hello world", :include?, "Hello"])    # -> pass
+      #   assert_send(["Hello world", :include?, "Goodbye"])  # -> fail
       def assert_send send_ary, m = nil
         recv, msg, *args = send_ary
         m = message(m) {
@@ -358,7 +389,7 @@ EOT
         template.gsub(/\G((?:[^\\]|\\.)*?)(\\)?\?/) { $1 + ($2 ? "?" : mu_pp(arguments.shift)) }
       end
 
-      def message(msg = nil, *args, &default)
+      def message(msg = nil, *args, &default) # :nodoc:
         if Proc === msg
           super(nil, *args) do
             [msg.call, (default.call if default)].compact.reject(&:empty?).join(".\n")

@@ -242,25 +242,50 @@ test x"$target_alias" = x &&
 target_os=`echo $target_os | sed 's/linux-gnu$/linux/;s/linux-gnu/linux-/'`
 ac_install_sh='' # unusable for extension libraries.
 
+AS_CASE($target_os,
+	[darwin*], [os_version_style=major+0],
+	[os_version_style=full])
+AC_ARG_WITH(os-version-style,
+	AS_HELP_STRING([--with-os-version-style=TYPE],
+		       [OS version number for target and target_os [[full]]]
+		       [(full|teeny|minor+0|minor|major+0|major|none)]),
+	[os_version_style=$withval])
+os_version_style_transform=
+AS_CASE("${os_version_style}",
+	[full|teeny], [],
+	[minor+0], [os_version_style_transform=['s/\([0-9]\.[0-9][0-9]*\)\.[0-9][.0-9]*$/\1.0/']],
+	[minor],   [os_version_style_transform=['s/\([0-9]\.[0-9][0-9]*\)\.[0-9][.0-9]*$/\1/']],
+	[major+0], [os_version_style_transform=['s/\([0-9]\)\.[0-9][.0-9]*$/\1.0/']],
+	[major],   [os_version_style_transform=['s/\([0-9]\)\.[0-9][.0-9]*$/\1/']],
+	[none],    [os_version_style_transform=['s/[0-9]\.[0-9][.0-9]*$//']],
+	[AC_MSG_ERROR(unknown --with-os-version-style: $withval)])
+AS_IF([test -z "$target_alias" -a -n "$os_version_style_transform"],
+	[
+	target=`echo ${target} | sed "$os_version_style_transform"`
+	target_os=`echo ${target_os} | sed "$os_version_style_transform"`
+	])
+
 AC_DEFUN([RUBY_APPEND_OPTION],
-	[# RUBY_APPEND_OPTION($1, $2)
+	[# RUBY_APPEND_OPTION($1)
 	AS_CASE([" [$]{$1-} "],
 	[*' $2 '*], [], ['  '], [ $1="$2"], [ $1="[$]$1 $2"])])
 AC_DEFUN([RUBY_APPEND_OPTIONS],
-	[{ for rb_opt in $2; do # RUBY_APPEND_OPTIONS($1, $2)
+	[# RUBY_APPEND_OPTIONS($1)
+	for rb_opt in $2; do
 	AS_CASE([" [$]{$1-} "],
 	[*" [$]{rb_opt} "*], [], ['  '], [ $1="[$]{rb_opt}"], [ $1="[$]$1 [$]{rb_opt}"])
-	done; }])
+	done])
 AC_DEFUN([RUBY_PREPEND_OPTION],
-	[# RUBY_PREPEND_OPTION($1, $2)
+	[# RUBY_PREPEND_OPTION($1)
 	AS_CASE([" [$]{$1-} "],
 	[*' $2 '*], [], ['  '], [ $1="$2"], [ $1="$2 [$]$1"])])
 AC_DEFUN([RUBY_PREPEND_OPTIONS],
-	[{ unset rb_opts; for rb_opt in $2; do # RUBY_PREPEND_OPTIONS($1, $2)
+	[# RUBY_PREPEND_OPTIONS($1)
+	unset rb_opts; for rb_opt in $2; do
 	AS_CASE([" [$]{rb_opts} [$]{$1-} "],
 	[*" [$]{rb_opt} "*], [], ['  '], [ $1="[$]{rb_opt}"], [ rb_opts="[$]{rb_opts}[$]{rb_opt} "])
 	done
-	$1="[$]{rb_opts}[$]$1"; }])
+	$1="[$]{rb_opts}[$]$1"])
 
 AC_ARG_WITH(arch,
 	AS_HELP_STRING([--with-arch=ARCHS],
@@ -561,13 +586,17 @@ AC_DEFUN([RUBY_DTRACE_POSTPROCESS],
 [AC_CACHE_CHECK(whether $DTRACE needs post processing, rb_cv_prog_dtrace_g,
 [
   if {
-    echo "provider conftest{ probe fire(); };" > conftest_provider.d &&
-    dtrace -h -o conftest_provider.h -s conftest_provider.d >/dev/null 2>/dev/null &&
+    cat >conftest_provider.d <<_PROBES &&
+    provider conftest {
+      probe fire();
+    };
+_PROBES
+    $DTRACE -h -o conftest_provider.h -s conftest_provider.d >/dev/null 2>/dev/null &&
     cat >conftest.c <<_CONF &&
     @%:@include "conftest_provider.h"
     int main(void){ CONFTEST_FIRE(); return 0; }
 _CONF
-    $CC $CFLAGS -c -o conftest.o conftest.c &&
+    $CC $CFLAGS $CPPFLAGS -c -o conftest.o conftest.c &&
     $DTRACE -G -s conftest_provider.d conftest.o 2>/dev/null
   }; then
     rb_cv_prog_dtrace_g=yes
@@ -645,6 +674,25 @@ else
   unset ac_c_werror_flag
 fi])
 
+RUBY_WERROR_FLAG([
+    AC_MSG_CHECKING([whether CFLAGS is valid])
+    AC_TRY_COMPILE([], [],
+	[AC_MSG_RESULT(yes)],
+	[
+	AC_MSG_RESULT(no)
+	AC_MSG_ERROR([something wrong with CFLAGS="$CFLAGS"])
+	]
+    )
+    AC_MSG_CHECKING([whether LDFLAGS is valid])
+    AC_TRY_LINK([], [],
+	[AC_MSG_RESULT(yes)],
+	[
+	AC_MSG_RESULT(no)
+	AC_MSG_ERROR([something wrong with LDFLAGS="$LDFLAGS"])
+	]
+    )
+])
+
 AC_DEFUN(RUBY_TRY_CFLAGS, [
     AC_MSG_CHECKING([whether ]$1[ is accepted as CFLAGS])
     RUBY_WERROR_FLAG([
@@ -696,6 +744,7 @@ if test "$GCC:${warnflags+set}:no" = yes::no; then
 		 -Werror=declaration-after-statement \
 		 -Werror=shorten-64-to-32 \
 		 -Werror=implicit-function-declaration \
+		 -Werror=division-by-zero \
 		 $extra_warning \
 		 ; do
 	if test "$particular_werror_flags" != yes; then
@@ -807,7 +856,35 @@ if test "$GCC" = yes; then
     for oflag in -fno-fast-math; do
 	RUBY_TRY_CFLAGS($oflag, [RUBY_APPEND_OPTION(optflags, $oflag)])
     done
+    AS_CASE(["$target"],
+	[*-darwin*], [
+	    # doesn't seem necessary on Mac OS X
+	],
+	[[i[4-6]86*]], [
+	    RUBY_TRY_CFLAGS(-msse2 -mfpmath=sse, [
+		RUBY_APPEND_OPTION(XCFLAGS, -msse2 -mfpmath=sse)
+	    ])
+            AS_CASE(["$XCFLAGS"],
+                [[*-msse2*]], [
+                    RUBY_TRY_CFLAGS(-mstackrealign, [
+                        RUBY_APPEND_OPTION(XCFLAGS, -mstackrealign)
+                    ])
+                ])
+	]
+    )
 fi
+
+AC_ARG_WITH(opt-dir,
+	AS_HELP_STRING([--with-opt-dir=DIR-LIST],
+		       [add optional headers and libraries directories separated by $PATH_SEPARATOR]),
+	[
+		val=`echo "$PATH_SEPARATOR$withval" | sed "s|$PATH_SEPARATOR\([[^$PATH_SEPARATOR]*]\)| -I\1/include|g;s/^ //"`
+		CPPFLAGS="$CPPFLAGS $val"
+		val=`echo "$PATH_SEPARATOR$withval" | sed "s|$PATH_SEPARATOR\([[^$PATH_SEPARATOR]*]\)| -L\1/lib|g;s/^ //"`
+		LDFLAGS="$LDFLAGS $val"
+		LDFLAGS_OPTDIR="$val"
+		OPT_DIR="$withval"
+	], [OPT_DIR=])
 
 test -z "${ac_env_CFLAGS_set}" -a -n "${cflags+set}" && eval CFLAGS="\"$cflags $ARCH_FLAG\""
 test -z "${ac_env_CXXFLAGS_set}" -a -n "${cxxflags+set}" && eval CXXFLAGS="\"$cxxflags $ARCH_FLAG\""
@@ -821,6 +898,7 @@ AC_ARG_WITH(winnt-ver,
 AS_CASE(["$target_os"],
 [mingw*], [
   RUBY_APPEND_OPTION(CPPFLAGS, -D_WIN32_WINNT=$with_winnt_ver)
+  RUBY_APPEND_OPTION(CPPFLAGS, -D__MINGW_USE_VC2005_COMPAT)
 ])
 
 AS_CASE(["$target_os"],
@@ -964,12 +1042,16 @@ main()
 		ac_cv_func_gmtime_r=yes
 		rb_cv_large_fd_select=yes
 		ac_cv_type_struct_timeval=yes
+                ac_cv_func_clock_gettime=yes
+                ac_cv_func_clock_getres=yes
+		ac_cv_func_malloc_usable_size=no
 		AC_CHECK_TYPE([NET_LUID], [], [],
 			      [@%:@include <windows.h>
 		  	      @%:@include <iphlpapi.h>])
 		if test x"$ac_cv_type_NET_LUID" = xyes; then
 		    AC_DEFINE(HAVE_TYPE_NET_LUID, 1)
 		fi
+		AC_CHECK_FUNCS(_gmtime64_s)
 		AC_LIBOBJ([langinfo])
 		],
 [os2-emx*], [	LIBS="-lm $LIBS"
@@ -1045,8 +1127,23 @@ AC_CHECK_HEADERS( \
   process.h \
   sys/prctl.h \
   atomic.h \
+  malloc.h \
+  malloc_np.h \
+  malloc/malloc.h \
   setjmpex.h
 )
+
+AC_ARG_WITH([gmp],
+  [AS_HELP_STRING([--without-gmp],
+    [disable GNU GMP to accelerate Bignum operations])],
+  [],
+  [with_gmp=yes])
+AS_IF([test "x$with_gmp" != xno],
+  [AC_CHECK_HEADERS(gmp.h)
+   AS_IF([test "x$ac_cv_header_gmp_h" != xno],
+     AC_CHECK_LIB([gmp], [__gmpz_init]))
+   with_gmp="$ac_cv_lib_gmp___gmpz_init"
+   AS_IF([test -z "$with_gmp"], [with_gmp=no])])
 
 dnl check for large file stuff
 mv confdefs.h confdefs1.h
@@ -1167,6 +1264,7 @@ RUBY_CHECK_SIZEOF(void*, [int long "long long"], [ILP LP LLP])
 RUBY_CHECK_SIZEOF(float)
 RUBY_CHECK_SIZEOF(double)
 RUBY_CHECK_SIZEOF(time_t, [long "long long"], [], [@%:@include <time.h>])
+RUBY_CHECK_SIZEOF(clock_t, [], [], [@%:@include <time.h>])
 
 AC_DEFUN([RUBY_CHECK_PRINTF_PREFIX], [
 AC_CACHE_CHECK([for printf prefix for $1], [rb_cv_pri_prefix_]AS_TR_SH($1),[
@@ -1198,6 +1296,11 @@ elif test "x$ac_cv_type___int64" = xyes; then
     RUBY_CHECK_PRINTF_PREFIX(__int64, ll I64, LL)
 fi
 
+dnl RUBY_CHECK_SIZEOF [typename] [if-signed] [if-unsigned] [included]
+AC_DEFUN([RUBY_CHECK_SIGNEDNESS], [dnl
+    AC_COMPILE_IFELSE([AC_LANG_BOOL_COMPILE_TRY([AC_INCLUDES_DEFAULT([$4])], [($1)-1 > 0])],
+		      [$3], [$2])])
+
 dnl RUBY_REPLACE_TYPE [typename] [default type] [macro type] [included]
 AC_DEFUN([RUBY_REPLACE_TYPE], [dnl
     AC_CHECK_TYPE([$1],
@@ -1210,10 +1313,7 @@ AC_DEFUN([RUBY_REPLACE_TYPE], [dnl
 	  [*" signed "*], [ ],
 	  [*" unsigned "*], [
 	    u=U],
-	  [
-	    AC_COMPILE_IFELSE(
-		[AC_LANG_BOOL_COMPILE_TRY([AC_INCLUDES_DEFAULT([$4])], [($n)-1 > 0])],
-		[u=U])])
+	  [RUBY_CHECK_SIGNEDNESS($n, [], [u=U], [$4])])
 	if test x"$t" = x; then
 	    for t in "long long" long int short; do
 		test -n "$u" && t="unsigned $t"
@@ -1417,7 +1517,22 @@ if test "$GCC" = yes; then
 	AC_DEFINE_UNQUOTED([RUBY_ALIAS_FUNCTION_VOID(prot, name, args)],
 			   [RUBY_ALIAS_FUNCTION_TYPE(void, prot, name, args)])
     fi
-    AC_CACHE_CHECK([for atomic builtins], [rb_cv_gcc_atomic_builtins], [
+
+    AC_CACHE_CHECK([for __atomic builtins], [rb_cv_gcc_atomic_builtins], [
+	AC_TRY_LINK([unsigned char atomic_var;],
+		    [
+			__atomic_exchange_n(&atomic_var, 0, __ATOMIC_SEQ_CST);
+			__atomic_exchange_n(&atomic_var, 1, __ATOMIC_SEQ_CST);
+			__atomic_fetch_add(&atomic_var, 1, __ATOMIC_SEQ_CST);
+			__atomic_fetch_sub(&atomic_var, 1, __ATOMIC_SEQ_CST);
+		    ],
+		    [rb_cv_gcc_atomic_builtins=yes],
+		    [rb_cv_gcc_atomic_builtins=no])])
+    if test "$rb_cv_gcc_atomic_builtins" = yes; then
+	AC_DEFINE(HAVE_GCC_ATOMIC_BUILTINS)
+    fi
+
+    AC_CACHE_CHECK([for __sync builtins], [rb_cv_gcc_sync_builtins], [
 	AC_TRY_LINK([unsigned char atomic_var;],
 		    [
 			__sync_lock_test_and_set(&atomic_var, 0);
@@ -1425,10 +1540,10 @@ if test "$GCC" = yes; then
 			__sync_fetch_and_add(&atomic_var, 1);
 			__sync_fetch_and_sub(&atomic_var, 1);
 		    ],
-		    [rb_cv_gcc_atomic_builtins=yes],
-		    [rb_cv_gcc_atomic_builtins=no])])
-    if test "$rb_cv_gcc_atomic_builtins" = yes; then
-	AC_DEFINE(HAVE_GCC_ATOMIC_BUILTINS)
+		    [rb_cv_gcc_sync_builtins=yes],
+		    [rb_cv_gcc_sync_builtins=no])])
+    if test "$rb_cv_gcc_sync_builtins" = yes; then
+	AC_DEFINE(HAVE_GCC_SYNC_BUILTINS)
     fi
 
     AC_CACHE_CHECK(for __builtin_unreachable, rb_cv_func___builtin_unreachable,
@@ -1499,6 +1614,8 @@ fi
 
 
 AC_TYPE_SIZE_T
+RUBY_CHECK_SIGNEDNESS(size_t, [AC_MSG_ERROR(size_t is signed)], [],
+		      [@%:@include <sys/types.h>])
 RUBY_CHECK_SIZEOF(size_t, [int long void*], [], [@%:@include <sys/types.h>])
 RUBY_CHECK_SIZEOF(ptrdiff_t, size_t, [], [@%:@include <stddef.h>])
 RUBY_CHECK_PRINTF_PREFIX(size_t, z)
@@ -1728,6 +1845,7 @@ AS_CASE(["$target_os"],
 [aix* | k*bsd*-gnu | kopensolaris*-gnu | linux* | darwin*], [AC_DEFINE(SPT_TYPE,SPT_REUSEARGV)],
 [hpux*], [AC_DEFINE(SPT_TYPE,SPT_PSTAT) ],
 [])
+AC_CHECK_HEADERS(sys/pstat.h)
 
 
 AC_CACHE_CHECK(for signbit, rb_cv_have_signbit,
@@ -1788,6 +1906,8 @@ AC_CHECK_FUNCS(llabs)
 AC_CHECK_FUNCS(lockf)
 AC_CHECK_FUNCS(log2)
 AC_CHECK_FUNCS(lstat)
+AC_CHECK_FUNCS(malloc_usable_size)
+AC_CHECK_FUNCS(malloc_size)
 AC_CHECK_FUNCS(mblen)
 AC_CHECK_FUNCS(memalign)
 AC_CHECK_FUNCS(memrchr)
@@ -1849,20 +1969,25 @@ AC_CACHE_CHECK([for $1], AS_TR_SH(rb_cv_builtin_$1),
 if test "${AS_TR_SH(rb_cv_builtin_$1)}" != no; then
   AC_DEFINE(AS_TR_CPP(HAVE_BUILTIN_$1))
 fi])
+RUBY_CHECK_BUILTIN_FUNC(__builtin_bswap16, [__builtin_bswap16(0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_bswap32, [__builtin_bswap32(0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_bswap64, [__builtin_bswap64(0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_clz, [__builtin_clz(0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_clzl, [__builtin_clzl(0)])
 RUBY_CHECK_BUILTIN_FUNC(__builtin_clzll, [__builtin_clzll(0)])
+RUBY_CHECK_BUILTIN_FUNC(__builtin_choose_expr, [__builtin_choose_expr(0, 0, 0)])
+RUBY_CHECK_BUILTIN_FUNC(__builtin_types_compatible_p, [__builtin_types_compatible_p(int, int)])
 
 # Some platform need -lrt for clock_gettime, but the other don't.
 if test x"$ac_cv_func_clock_gettime" != xyes; then
     # glibc 2.17 moves clock_* functions from librt to the main C library.
     # http://sourceware.org/ml/libc-announce/2012/msg00001.html
     AC_CHECK_LIB(rt, clock_gettime)
-    unset ac_cv_func_clock_gettime
-    AC_CHECK_FUNCS(clock_gettime)
+    if test x"$ac_cv_lib_rt_clock_gettime" = xyes; then
+	AC_DEFINE(HAVE_CLOCK_GETTIME, 1)
+    fi
 fi
+AC_CHECK_FUNCS(clock_getres) # clock_getres should be tested after clock_gettime test including librt test.
 
 AC_CACHE_CHECK(for unsetenv returns a value, rb_cv_unsetenv_return_value,
   [AC_TRY_COMPILE([
@@ -2081,7 +2206,7 @@ main()
 ],
 	rb_cv_localtime_overflow=yes,
 	rb_cv_localtime_overflow=no,
-	rb_cv_localtime_overflow=yes)])
+	rb_cv_localtime_overflow=no)])
 if test "$rb_cv_localtime_overflow" = no; then
   AC_DEFINE(LOCALTIME_OVERFLOW_PROBLEM)
 fi
@@ -2543,7 +2668,7 @@ if test "$with_dln_a_out" != yes; then
 			: ${LDSHARED='$(CC) -shared'}
 			if test "$rb_cv_binary_elf" = yes; then
 			    LDFLAGS="$LDFLAGS -rdynamic"
-			    DLDFLAGS="$DLDFLAGS "'-Wl,-soname,$(.TARGET)'
+			    DLDFLAGS="$DLDFLAGS "'-Wl,-soname,$@'
 			else
 			  test "$GCC" = yes && test "$rb_cv_prog_gnu_ld" = yes || LDSHARED='$(LD) -Bshareable'
 			fi
@@ -2554,7 +2679,10 @@ if test "$with_dln_a_out" != yes; then
 			fi
 			rb_cv_dlopen=yes],
 	[darwin*], [	: ${LDSHARED='$(CC) -dynamic -bundle'}
-			: ${DLDFLAGS="${linker_flag}-undefined${linker_flag:+,}dynamic_lookup ${linker_flag}-multiply_defined${linker_flag:+,}suppress"}
+			RUBY_APPEND_OPTIONS(DLDFLAGS, [ \
+			    "${linker_flag}-undefined${linker_flag:+,}dynamic_lookup" \
+			    "${linker_flag}-multiply_defined${linker_flag:+,}suppress" \
+			    ])
 			: ${LDFLAGS=""}
 			: ${LIBPATHENV=DYLD_LIBRARY_PATH}
 			# /usr/local/include is always searched for
@@ -2643,23 +2771,20 @@ AC_SUBST(RPATHFLAG)
 AC_SUBST(LIBPATHENV, "${LIBPATHENV-LD_LIBRARY_PATH}")
 AC_SUBST(TRY_LINK)
 
-AC_ARG_WITH(opt-dir,
-	AS_HELP_STRING([--with-opt-dir=DIR-LIST],
-		       [add optional headers and libraries directories separated by $PATH_SEPARATOR]),
-	[
-		val=`echo "$PATH_SEPARATOR$withval" | sed "s|$PATH_SEPARATOR\([[^$PATH_SEPARATOR]*]\)| -I\1/include|g;s/^ //"`
-		CPPFLAGS="$CPPFLAGS $val"
-		val=`IFS="$PATH_SEPARATOR"
-		    for dir in $withval; do
-			echo x ${LIBPATHFLAG} ${RPATHFLAG} |
-			sed "s/^x *//;s${IFS}"'%1\\$-s'"${IFS}${dir}/lib${IFS}g;s${IFS}%s${IFS}${dir}/lib${IFS}g"
-		    done | tr '\012' ' '`
-		LDFLAGS_OPTDIR="$val"
-		test x"${LDFLAGS}" = x || LDFLAGS="$LDFLAGS "
-		LDFLAGS="$LDFLAGS$val"
-		test x"${DLDFLAGS}" = x || DLDFLAGS="$DLDFLAGS "
-		DLDFLAGS="$DLDFLAGS$val"
-	])
+if test "x$OPT_DIR" != x; then
+    pat=`echo "${LDFLAGS_OPTDIR}" | sed ['s/[][\\.*|]/\\\\&/']`
+    LDFLAGS=`echo "${LDFLAGS}" | sed "s| ${pat}||"`
+    val=`IFS="$PATH_SEPARATOR"
+        for dir in $OPT_DIR; do
+            echo x ${LIBPATHFLAG} ${RPATHFLAG} |
+            sed "s/^x *//;s${IFS}"'%1\\$-s'"${IFS}${dir}/lib${IFS}g;s${IFS}%s${IFS}${dir}/lib${IFS}g"
+        done | tr '\012' ' '`
+    test x"${LDFLAGS}" = x || LDFLAGS="$LDFLAGS "
+    LDFLAGS="$LDFLAGS$val"
+    test x"${DLDFLAGS}" = x || DLDFLAGS="$DLDFLAGS "
+    DLDFLAGS="$DLDFLAGS$val"
+    LDFLAGS_OPTDIR="$val"
+fi
 
 AS_CASE(["$target_cpu-$target_os"],
 [*-darwin*], [
@@ -2851,6 +2976,15 @@ else
 fi
 AC_SUBST(setup)
 
+rubylibprefix='${libdir}/${RUBY_BASE_NAME}'
+AC_ARG_WITH(rubylibprefix,
+	    AS_HELP_STRING([--with-rubylibprefix=DIR], [prefix for ruby libraries [[LIBDIR/RUBY_BASE_NAME]]]),
+	    [if test "x$withval" = xno; then
+		AC_MSG_ERROR([No ruby, No libprefix])
+	    fi
+	    rubylibprefix="$withval"])
+AC_SUBST(rubylibprefix)
+
 if test x"${exec_prefix}" != xNONE; then
     RUBY_EXEC_PREFIX="$exec_prefix"
 elif test x"$prefix" != xNONE; then
@@ -2859,7 +2993,7 @@ else
     RUBY_EXEC_PREFIX=$ac_default_prefix
 fi
 pat=`echo "${RUBY_EXEC_PREFIX}" | tr -c '\012' .`'\(.*\)'
-for var in bindir libdir; do
+for var in bindir libdir rubylibprefix; do
     eval val='"$'$var'"'
     AS_CASE(["$val"], ["${RUBY_EXEC_PREFIX}"*], [val='${exec_prefix}'"`expr \"$val\" : \"$pat\"`"])
     eval $var='"$val"'
@@ -2875,7 +3009,8 @@ if test x"$cross_compiling" = xyes; then
   AC_SUBST(XRUBY_RUBYLIBDIR)
   AC_SUBST(XRUBY_RUBYHDRDIR)
   PREP='$(arch)-fake.rb'
-  RUNRUBY='$(MINIRUBY) -I`cd $(srcdir)/lib; pwd`'
+  RUNRUBY_COMMAND='$(MINIRUBY) -I`cd $(srcdir)/lib; pwd`'
+  RUNRUBY='$(RUNRUBY_COMMAND)'
   XRUBY='$(MINIRUBY)'
   TEST_RUNNABLE=no
   CROSS_COMPILING=yes
@@ -2897,7 +3032,8 @@ else
   MINIRUBY='./miniruby$(EXEEXT) -I$(srcdir)/lib -I.'
   MINIRUBY="$MINIRUBY"' -I$(EXTOUT)/common'
   PREP='miniruby$(EXEEXT)'
-  RUNRUBY='$(MINIRUBY) $(srcdir)/tool/runruby.rb --extout=$(EXTOUT)'
+  RUNRUBY_COMMAND='$(MINIRUBY) $(srcdir)/tool/runruby.rb --extout=$(EXTOUT) $(RUNRUBYOPT)'
+  RUNRUBY='$(RUNRUBY_COMMAND) --'
   XRUBY='$(RUNRUBY)'
   TEST_RUNNABLE=yes
   CROSS_COMPILING=no
@@ -2907,6 +3043,7 @@ AC_SUBST(CROSS_COMPILING)
 AC_SUBST(MINIRUBY)
 AC_SUBST(BTESTRUBY)
 AC_SUBST(PREP)
+AC_SUBST(RUNRUBY_COMMAND)
 AC_SUBST(RUNRUBY)
 AC_SUBST(XRUBY)
 AC_SUBST(EXTOUT, [${EXTOUT=.ext}])
@@ -3062,6 +3199,7 @@ AS_CASE("$enable_shared", [yes], [
 	LIBRUBY_DLDFLAGS="$LIBRUBY_DLDFLAGS "' $(XLDFLAGS)'
 	LIBRUBY_SO='lib$(RUBY_SO_NAME).dylib'
 	LIBRUBY_ALIASES='lib$(RUBY_BASE_NAME).$(MAJOR).$(MINOR).dylib lib$(RUBY_INSTALL_NAME).dylib'
+	SOLIBS='$(LIBS)'
 	],
     [interix*], [
 	LIBRUBYARG_SHARED='-L. -L${libdir} -l$(RUBY_SO_NAME)'
@@ -3312,6 +3450,10 @@ AS_CASE(["$target_os"],
     [nacl], [
 	FIRSTMAKEFILE=GNUmakefile:nacl/GNUmakefile.in
 	])
+
+AS_CASE(["$with_gmp: $SOLIBS "], [no:* | *' -lgmp '*|*' $(LIBS) '*], [],
+	[SOLIBS="-lgmp $SOLIBS"])
+
 MINIOBJS="$MINIDLNOBJ"
 
 AS_CASE(["$THREAD_MODEL"],
@@ -3445,7 +3587,7 @@ if test "${ARCH_FLAG}"; then
     LDFLAGS=`echo "$LDFLAGS" | sed "s| *$archflagpat"'||'`
 fi
 warnflags="$rb_cv_warnflags"
-AC_SUBST(cppflags, [])dnl
+AC_SUBST(cppflags)dnl
 AC_SUBST(cflags, ["$orig_cflags "'${optflags} ${debugflags} ${warnflags}'])dnl
 AC_SUBST(cxxflags, ["$orig_cxxflags "'${optflags} ${debugflags} ${warnflags}'])dnl
 AC_SUBST(optflags)dnl
@@ -3482,7 +3624,9 @@ AC_SUBST(MINIOBJS)
 AC_SUBST(THREAD_MODEL)
 AC_SUBST(PLATFORM_DIR)
 
-MAKEFILES="Makefile `echo $FIRSTMAKEFILE | sed 's/:.*//'`"
+firstmf=`echo $FIRSTMAKEFILE | sed 's/:.*//'`
+firsttmpl=`echo $FIRSTMAKEFILE | sed 's/.*://'`
+MAKEFILES="Makefile $firstmf"
 MAKEFILES="`echo $MAKEFILES`"
 AC_SUBST(MAKEFILES)
 
@@ -3501,14 +3645,6 @@ AS_CASE(["$target_os"],
     rubyw_install_name='$(RUBYW_INSTALL_NAME)'
     ])
 
-rubylibprefix='${libdir}/${RUBY_BASE_NAME}'
-AC_ARG_WITH(rubylibprefix,
-	    AS_HELP_STRING([--with-rubylibprefix=DIR], [prefix for ruby libraries [[LIBDIR/RUBY_BASE_NAME]]]),
-	    [if test "x$withval" = xno; then
-		AC_MSG_ERROR([No ruby, No libprefix])
-	    fi
-	    rubylibprefix="$withval"])
-AC_SUBST(rubylibprefix)
 rubylibdir='${rubylibprefix}/${ruby_version}'
 rubyarchdir=${multiarch+'${rubyarchprefix}/${ruby_version}'}${multiarch-'${rubylibdir}/${arch}'}
 
@@ -3757,7 +3893,9 @@ AC_MSG_RESULT($PACKAGE library version = $ruby_version)
 
 AS_CASE([" $CPP "], [*" $CC "*], [CPP=`echo " $CPP " | sed "s| $CC |"' $(CC) |;s/^ *//;s/  *$//'`])
 
-AC_CONFIG_FILES($FIRSTMAKEFILE)
+if test x"$firstmf" != x; then
+    AC_CONFIG_FILES($firstmf:$firsttmpl, [], [firstmf="$firstmf" firsttmpl="$firsttmpl"])
+fi
 AC_CONFIG_FILES(Makefile, [
     tmpmk=confmk$$.tmp
     {

@@ -27,7 +27,7 @@ class TestGemUninstaller < Gem::InstallerTestCase
   end
 
   def test_ask_if_ok
-    c = quick_spec 'c'
+    c = util_spec 'c'
 
     uninstaller = Gem::Uninstaller.new nil
 
@@ -131,6 +131,23 @@ class TestGemUninstaller < Gem::InstallerTestCase
     Gem::Installer.exec_format = nil
   end
 
+  def test_remove_not_in_home
+    uninstaller = Gem::Uninstaller.new nil, :install_dir => "#{@gemhome}2"
+
+    e = assert_raises Gem::GemNotInHomeException do
+      use_ui ui do
+        uninstaller.remove @spec
+      end
+    end
+
+    expected =
+      "Gem '#{@spec.full_name}' is not installed in directory #{@gemhome}2"
+
+    assert_equal expected, e.message
+
+    assert_path_exists @spec.gem_dir
+  end
+
   def test_path_ok_eh
     uninstaller = Gem::Uninstaller.new nil
 
@@ -205,6 +222,32 @@ class TestGemUninstaller < Gem::InstallerTestCase
     refute_path_exists spec.gem_dir
   end
 
+  def test_uninstall_extension
+    @spec.extensions << 'extconf.rb'
+    write_file File.join(@tempdir, 'extconf.rb') do |io|
+      io.write <<-RUBY
+require 'mkmf'
+create_makefile '#{@spec.name}'
+      RUBY
+    end
+
+    @spec.files += %w[extconf.rb]
+
+    use_ui @ui do
+      path = Gem::Package.build @spec
+
+      installer = Gem::Installer.new path
+      installer.install
+    end
+
+    assert_path_exists @spec.extension_dir, 'sanity check'
+
+    uninstaller = Gem::Uninstaller.new @spec.name, :executables => true
+    uninstaller.uninstall
+
+    refute_path_exists @spec.extension_dir
+  end
+
   def test_uninstall_nonexistent
     uninstaller = Gem::Uninstaller.new 'bogus', :executables => true
 
@@ -240,7 +283,7 @@ class TestGemUninstaller < Gem::InstallerTestCase
     assert File.exist?(executable), 'executable must still exist'
   end
 
-  def test_uninstall_user
+  def test_uninstall_user_install
     @user_spec = Gem::Specification.find_by_name 'b'
 
     uninstaller = Gem::Uninstaller.new(@user_spec.name,

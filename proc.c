@@ -14,6 +14,8 @@
 #include "gc.h"
 #include "iseq.h"
 
+NODE *rb_vm_cref_in_context(VALUE self);
+
 struct METHOD {
     VALUE recv;
     VALUE rclass;
@@ -78,6 +80,7 @@ static const rb_data_type_t proc_data_type = {
 	proc_free,
 	proc_memsize,
     },
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 VALUE
@@ -276,6 +279,7 @@ const rb_data_type_t ruby_binding_data_type = {
 	binding_free,
 	binding_memsize,
     },
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 static VALUE
@@ -752,7 +756,7 @@ rb_proc_call(VALUE self, VALUE args)
     VALUE vret;
     rb_proc_t *proc;
     GetProcPtr(self, proc);
-    vret = rb_vm_invoke_proc(GET_THREAD(), proc, check_argc(RARRAY_LEN(args)), RARRAY_RAWPTR(args), 0);
+    vret = rb_vm_invoke_proc(GET_THREAD(), proc, check_argc(RARRAY_LEN(args)), RARRAY_CONST_PTR(args), 0);
     RB_GC_GUARD(self);
     RB_GC_GUARD(args);
     return vret;
@@ -924,7 +928,7 @@ iseq_location(rb_iseq_t *iseq)
     if (!iseq) return Qnil;
     loc[0] = iseq->location.path;
     if (iseq->line_info_table) {
-	loc[1] = INT2FIX(rb_iseq_first_lineno(iseq));
+	loc[1] = rb_iseq_first_lineno(iseq->self);
     }
     else {
 	loc[1] = Qnil;
@@ -1038,7 +1042,7 @@ proc_to_s(VALUE self)
 	int first_lineno = 0;
 
 	if (iseq->line_info_table) {
-	    first_lineno = rb_iseq_first_lineno(iseq);
+	    first_lineno = FIX2INT(rb_iseq_first_lineno(iseq->self));
 	}
 	str = rb_sprintf("#<%s:%p@%"PRIsVALUE":%d%s>", cname, (void *)self,
 			 iseq->location.path, first_lineno, is_lambda);
@@ -1104,6 +1108,7 @@ static const rb_data_type_t method_data_type = {
 	bm_free,
 	bm_memsize,
     },
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 VALUE
@@ -1125,7 +1130,6 @@ mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
     VALUE rclass = klass;
     ID rid = id;
     struct METHOD *data;
-    rb_method_entry_t meb;
     rb_method_definition_t *def = 0;
     rb_method_flag_t flag = NOEX_UNDEF;
 
@@ -1136,18 +1140,8 @@ mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
 
 	if (obj != Qundef && !rb_method_basic_definition_p(klass, rmiss)) {
 	    if (RTEST(rb_funcall(obj, rmiss, 2, sym, scope ? Qfalse : Qtrue))) {
-		def = ALLOC(rb_method_definition_t);
-		def->type = VM_METHOD_TYPE_MISSING;
-		def->original_id = id;
-		def->alias_count = 0;
-
-		meb.flag = 0;
-		meb.mark = 0;
-		meb.called_id = id;
-		meb.klass = klass;
-		meb.def = def;
-		me = &meb;
-		def = 0;
+		me = 0;
+		defined_class = klass;
 
 		goto gen_method;
 	    }
@@ -1163,10 +1157,10 @@ mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
 		case NOEX_PRIVATE: v = "private"; break;
 		case NOEX_PROTECTED: v = "protected"; break;
 	    }
-	    rb_name_error(id, "method `%s' for %s `%s' is %s",
+	    rb_name_error(id, "method `%s' for %s `% "PRIsVALUE"' is %s",
 			  rb_id2name(id),
 			  (RB_TYPE_P(klass, T_MODULE)) ? "module" : "class",
-			  rb_class2name(klass),
+			  rb_class_name(klass),
 			  v);
 	}
     }
@@ -1184,10 +1178,6 @@ mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
 	rclass = RCLASS_SUPER(rclass);
     }
 
-    if (RB_TYPE_P(klass, T_ICLASS)) {
-	klass = RBASIC(klass)->klass;
-    }
-
   gen_method:
     method = TypedData_Make_Struct(mclass, struct METHOD, &method_data_type, data);
 
@@ -1196,9 +1186,27 @@ mnew_from_me(rb_method_entry_t *me, VALUE defined_class, VALUE klass,
     data->defined_class = defined_class;
     data->id = rid;
     data->me = ALLOC(rb_method_entry_t);
-    *data->me = *me;
-    data->me->def->alias_count++;
+    if (me) {
+	*data->me = *me;
+    }
+    else {
+	me = data->me;
+	me->flag = 0;
+	me->mark = 0;
+	me->called_id = id;
+	me->klass = klass;
+	me->def = 0;
+
+	def = ALLOC(rb_method_definition_t);
+	me->def = def;
+
+	def->type = VM_METHOD_TYPE_MISSING;
+	def->original_id = id;
+	def->alias_count = 0;
+
+    }
     data->ume = ALLOC(struct unlinked_method_entry_list_entry);
+    data->me->def->alias_count++;
 
     OBJ_INFECT(method, klass);
 
@@ -1384,9 +1392,16 @@ static VALUE
 method_owner(VALUE obj)
 {
     struct METHOD *data;
+    VALUE defined_class;
 
     TypedData_Get_Struct(obj, struct METHOD, &method_data_type, data);
-    return data->me->klass;
+    defined_class = data->defined_class;
+
+    if (RB_TYPE_P(defined_class, T_ICLASS)) {
+	defined_class = RBASIC_CLASS(defined_class);
+    }
+
+    return defined_class;
 }
 
 void
@@ -1609,7 +1624,12 @@ rb_mod_define_method(int argc, VALUE *argv, VALUE mod)
 {
     ID id;
     VALUE body;
-    int noex = (int)rb_vm_cref()->nd_visi;
+    int noex = NOEX_PUBLIC;
+    const NODE *cref = rb_vm_cref_in_context(mod);
+
+    if (cref && cref->nd_clss == mod) {
+	noex = (int)cref->nd_visi;
+    }
 
     if (argc == 1) {
 	id = rb_to_id(argv[0]);
@@ -1637,8 +1657,8 @@ rb_mod_define_method(int argc, VALUE *argv, VALUE mod)
 	    }
 	    else {
 		rb_raise(rb_eTypeError,
-			 "bind argument must be a subclass of %s",
-			 rb_class2name(rclass));
+			 "bind argument must be a subclass of % "PRIsVALUE,
+			 rb_class_name(rclass));
 	    }
 	}
 	rb_method_entry_set(mod, id, method->me, noex);
@@ -1652,7 +1672,7 @@ rb_mod_define_method(int argc, VALUE *argv, VALUE mod)
 	GetProcPtr(body, proc);
 	if (BUILTIN_TYPE(proc->block.iseq) != T_NODE) {
 	    proc->block.iseq->defined_method_id = id;
-	    OBJ_WRITE(proc->block.iseq->self, &proc->block.iseq->klass, mod);
+	    RB_OBJ_WRITE(proc->block.iseq->self, &proc->block.iseq->klass, mod);
 	    proc->is_lambda = TRUE;
 	    proc->is_from_method = TRUE;
 	    proc->block.klass = mod;
@@ -1918,18 +1938,20 @@ static VALUE
 umethod_bind(VALUE method, VALUE recv)
 {
     struct METHOD *data, *bound;
+    VALUE methclass;
 
     TypedData_Get_Struct(method, struct METHOD, &method_data_type, data);
 
-    if (!RB_TYPE_P(data->rclass, T_MODULE) &&
-	data->rclass != CLASS_OF(recv) && !rb_obj_is_kind_of(recv, data->rclass)) {
-	if (FL_TEST(data->rclass, FL_SINGLETON)) {
+    methclass = data->rclass;
+    if (!RB_TYPE_P(methclass, T_MODULE) &&
+	methclass != CLASS_OF(recv) && !rb_obj_is_kind_of(recv, methclass)) {
+	if (FL_TEST(methclass, FL_SINGLETON)) {
 	    rb_raise(rb_eTypeError,
 		     "singleton method called for a different object");
 	}
 	else {
-	    rb_raise(rb_eTypeError, "bind argument must be an instance of %s",
-		     rb_class2name(data->rclass));
+	    rb_raise(rb_eTypeError, "bind argument must be an instance of % "PRIsVALUE,
+		     rb_class_name(methclass));
 	}
     }
 
@@ -2201,6 +2223,7 @@ method_inspect(VALUE method)
     VALUE str;
     const char *s;
     const char *sharp = "#";
+    VALUE mklass;
 
     TypedData_Get_Struct(method, struct METHOD, &method_data_type, data);
     str = rb_str_buf_new2("#<");
@@ -2208,11 +2231,12 @@ method_inspect(VALUE method)
     rb_str_buf_cat2(str, s);
     rb_str_buf_cat2(str, ": ");
 
-    if (FL_TEST(data->me->klass, FL_SINGLETON)) {
-	VALUE v = rb_ivar_get(data->me->klass, attached);
+    mklass = data->me->klass;
+    if (FL_TEST(mklass, FL_SINGLETON)) {
+	VALUE v = rb_ivar_get(mklass, attached);
 
 	if (data->recv == Qundef) {
-	    rb_str_buf_append(str, rb_inspect(data->me->klass));
+	    rb_str_buf_append(str, rb_inspect(mklass));
 	}
 	else if (data->recv == v) {
 	    rb_str_buf_append(str, rb_inspect(v));
@@ -2227,10 +2251,10 @@ method_inspect(VALUE method)
 	}
     }
     else {
-	rb_str_buf_cat2(str, rb_class2name(data->rclass));
-	if (data->rclass != data->me->klass) {
+	rb_str_buf_append(str, rb_class_name(data->rclass));
+	if (data->rclass != mklass) {
 	    rb_str_buf_cat2(str, "(");
-	    rb_str_buf_cat2(str, rb_class2name(data->me->klass));
+	    rb_str_buf_append(str, rb_class_name(mklass));
 	    rb_str_buf_cat2(str, ")");
 	}
     }
@@ -2374,7 +2398,7 @@ proc_binding(VALUE self)
     bind->env = proc->envval;
     if (RUBY_VM_NORMAL_ISEQ_P(proc->block.iseq)) {
 	bind->path = proc->block.iseq->location.path;
-	bind->first_lineno = rb_iseq_first_lineno(proc->block.iseq);
+	bind->first_lineno = FIX2INT(rb_iseq_first_lineno(proc->block.iseq->self));
     }
     else {
 	bind->path = Qnil;
@@ -2421,7 +2445,7 @@ curry(VALUE dummy, VALUE args, int argc, VALUE *argv, VALUE passed_proc)
 	return arity;
     }
     else {
-	return rb_proc_call_with_block(proc, check_argc(RARRAY_LEN(passed)), RARRAY_RAWPTR(passed), passed_proc);
+	return rb_proc_call_with_block(proc, check_argc(RARRAY_LEN(passed)), RARRAY_CONST_PTR(passed), passed_proc);
     }
 }
 

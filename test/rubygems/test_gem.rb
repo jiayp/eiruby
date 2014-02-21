@@ -1,6 +1,7 @@
 # coding: US-ASCII
 require 'rubygems/test_case'
 require 'rubygems'
+require 'rubygems/command'
 require 'rubygems/installer'
 require 'pathname'
 require 'tmpdir'
@@ -115,7 +116,7 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_bin_path_nonexistent_binfile
-    quick_spec 'a', '2' do |s|
+    util_spec 'a', '2' do |s|
       s.executables = ['exec']
     end
     assert_raises(Gem::GemNotFoundException) do
@@ -124,7 +125,7 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_bin_path_no_bin_file
-    quick_spec 'a', '1'
+    util_spec 'a', '1'
     assert_raises(ArgumentError) do
       Gem.bin_path('a', nil, '1')
     end
@@ -138,7 +139,7 @@ class TestGem < Gem::TestCase
 
   def test_self_bin_path_bin_file_gone_in_latest
     util_exec_gem
-    quick_spec 'a', '10' do |s|
+    util_spec 'a', '10' do |s|
       s.executables = []
     end
     # Should not find a-10's non-abin (bug)
@@ -182,7 +183,7 @@ class TestGem < Gem::TestCase
         fp.puts 'blah'
       end
 
-      foo = quick_spec 'foo' do |s| s.files = %w[data/foo.txt] end
+      foo = util_spec 'foo' do |s| s.files = %w[data/foo.txt] end
       install_gem foo
     end
 
@@ -198,30 +199,21 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_default_exec_format
-    orig_RUBY_INSTALL_NAME = Gem::ConfigMap[:ruby_install_name]
-    Gem::ConfigMap[:ruby_install_name] = 'ruby'
-
-    assert_equal '%s', Gem.default_exec_format
-  ensure
-    Gem::ConfigMap[:ruby_install_name] = orig_RUBY_INSTALL_NAME
+    ruby_install_name 'ruby' do
+      assert_equal '%s', Gem.default_exec_format
+    end
   end
 
   def test_self_default_exec_format_18
-    orig_RUBY_INSTALL_NAME = Gem::ConfigMap[:ruby_install_name]
-    Gem::ConfigMap[:ruby_install_name] = 'ruby18'
-
-    assert_equal '%s18', Gem.default_exec_format
-  ensure
-    Gem::ConfigMap[:ruby_install_name] = orig_RUBY_INSTALL_NAME
+    ruby_install_name 'ruby18' do
+      assert_equal '%s18', Gem.default_exec_format
+    end
   end
 
   def test_self_default_exec_format_jruby
-    orig_RUBY_INSTALL_NAME = Gem::ConfigMap[:ruby_install_name]
-    Gem::ConfigMap[:ruby_install_name] = 'jruby'
-
-    assert_equal 'j%s', Gem.default_exec_format
-  ensure
-    Gem::ConfigMap[:ruby_install_name] = orig_RUBY_INSTALL_NAME
+    ruby_install_name 'jruby' do
+      assert_equal 'j%s', Gem.default_exec_format
+    end
   end
 
   def test_self_default_sources
@@ -229,6 +221,7 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_detect_gemdeps
+    skip 'Insecure operation - chdir' if RUBY_VERSION <= "1.8.7"
     rubygems_gemdeps, ENV['RUBYGEMS_GEMDEPS'] = ENV['RUBYGEMS_GEMDEPS'], '-'
 
     FileUtils.mkdir_p 'detect/a/b'
@@ -257,7 +250,12 @@ class TestGem < Gem::TestCase
 
     Gem.ensure_gem_subdirectories @gemhome
 
-    assert File.directory? File.join(@gemhome, "cache")
+    assert_path_exists File.join @gemhome, 'build_info'
+    assert_path_exists File.join @gemhome, 'cache'
+    assert_path_exists File.join @gemhome, 'doc'
+    assert_path_exists File.join @gemhome, 'extensions'
+    assert_path_exists File.join @gemhome, 'gems'
+    assert_path_exists File.join @gemhome, 'specifications'
   end
 
   def test_self_ensure_gem_directories_permissions
@@ -332,6 +330,18 @@ class TestGem < Gem::TestCase
     end
   end
 
+  def test_self_extension_dir_shared
+    enable_shared 'yes' do
+      assert_equal Gem.ruby_api_version, Gem.extension_api_version
+    end
+  end
+
+  def test_self_extension_dir_static
+    enable_shared 'no' do
+      assert_equal "#{Gem.ruby_api_version}-static", Gem.extension_api_version
+    end
+  end
+
   def test_self_find_files
     cwd = File.expand_path("test/rubygems", @@project_dir)
     $LOAD_PATH.unshift cwd
@@ -396,25 +406,23 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_latest_spec_for
-    a1  = quick_spec 'a', 1
-    a2  = quick_spec 'a', 2
-    a3a = quick_spec 'a', '3.a'
-
-    util_setup_fake_fetcher
-    util_setup_spec_fetcher a1, a2, a3a
+    gems = spec_fetcher do |fetcher|
+      fetcher.spec 'a', 1
+      fetcher.spec 'a', '3.a'
+      fetcher.spec 'a', 2
+    end
 
     spec = Gem.latest_spec_for 'a'
 
-    assert_equal a2, spec
+    assert_equal gems['a-2'], spec
   end
 
   def test_self_latest_rubygems_version
-    r1 = quick_spec 'rubygems-update', '1.8.23'
-    r2 = quick_spec 'rubygems-update', '1.8.24'
-    r3 = quick_spec 'rubygems-update', '2.0.0.preview3'
-
-    util_setup_fake_fetcher
-    util_setup_spec_fetcher r1, r2, r3
+    spec_fetcher do |fetcher|
+      fetcher.spec 'rubygems-update', '1.8.23'
+      fetcher.spec 'rubygems-update', '1.8.24'
+      fetcher.spec 'rubygems-update', '2.0.0.preview3'
+    end
 
     version = Gem.latest_rubygems_version
 
@@ -422,12 +430,11 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_latest_version_for
-    a1  = quick_spec 'a', 1
-    a2  = quick_spec 'a', 2
-    a3a = quick_spec 'a', '3.a'
-
-    util_setup_fake_fetcher
-    util_setup_spec_fetcher a1, a2, a3a
+    spec_fetcher do |fetcher|
+      fetcher.spec 'a', 1
+      fetcher.spec 'a', 2
+      fetcher.spec 'a', '3.a'
+    end
 
     version = Gem.latest_version_for 'a'
 
@@ -435,7 +442,7 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_loaded_specs
-    foo = quick_spec 'foo'
+    foo = util_spec 'foo'
     install_gem foo
 
     foo.activate
@@ -544,24 +551,43 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_prefix_libdir
-    orig_libdir = Gem::ConfigMap[:libdir]
-    Gem::ConfigMap[:libdir] = @@project_dir
+    orig_libdir = RbConfig::CONFIG['libdir']
+    RbConfig::CONFIG['libdir'] = @@project_dir
 
     assert_nil Gem.prefix
   ensure
-    Gem::ConfigMap[:libdir] = orig_libdir
+    RbConfig::CONFIG['libdir'] = orig_libdir
   end
 
   def test_self_prefix_sitelibdir
-    orig_sitelibdir = Gem::ConfigMap[:sitelibdir]
-    Gem::ConfigMap[:sitelibdir] = @@project_dir
+    orig_sitelibdir = RbConfig::CONFIG['sitelibdir']
+    RbConfig::CONFIG['sitelibdir'] = @@project_dir
 
     assert_nil Gem.prefix
   ensure
-    Gem::ConfigMap[:sitelibdir] = orig_sitelibdir
+    RbConfig::CONFIG['sitelibdir'] = orig_sitelibdir
+  end
+
+  def test_self_read_binary
+    open 'test', 'w' do |io|
+      io.write "\xCF\x80"
+    end
+
+    assert_equal ["\xCF", "\x80"], Gem.read_binary('test').chars.to_a
+
+    skip 'chmod not supported' if Gem.win_platform?
+
+    begin
+      File.chmod 0444, 'test'
+
+      assert_equal ["\xCF", "\x80"], Gem.read_binary('test').chars.to_a
+    ensure
+      File.chmod 0644, 'test'
+    end
   end
 
   def test_self_refresh
+    skip 'Insecure operation - mkdir' if RUBY_VERSION <= "1.8.7"
     util_make_gems
 
     a1_spec = @a1.spec_file
@@ -581,6 +607,7 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_refresh_keeps_loaded_specs_activated
+    skip 'Insecure operation - mkdir' if RUBY_VERSION <= "1.8.7"
     util_make_gems
 
     a1_spec = @a1.spec_file
@@ -603,40 +630,52 @@ class TestGem < Gem::TestCase
 
   def test_self_ruby_escaping_spaces_in_path
     orig_ruby = Gem.ruby
-    orig_bindir = Gem::ConfigMap[:bindir]
-    orig_ruby_install_name = Gem::ConfigMap[:ruby_install_name]
-    orig_exe_ext = Gem::ConfigMap[:EXEEXT]
+    orig_bindir = RbConfig::CONFIG['bindir']
+    orig_ruby_install_name = RbConfig::CONFIG['ruby_install_name']
+    orig_exe_ext = RbConfig::CONFIG['EXEEXT']
 
-    Gem::ConfigMap[:bindir] = "C:/Ruby 1.8/bin"
-    Gem::ConfigMap[:ruby_install_name] = "ruby"
-    Gem::ConfigMap[:EXEEXT] = ".exe"
+    RbConfig::CONFIG['bindir'] = "C:/Ruby 1.8/bin"
+    RbConfig::CONFIG['ruby_install_name'] = "ruby"
+    RbConfig::CONFIG['EXEEXT'] = ".exe"
     Gem.instance_variable_set("@ruby", nil)
 
     assert_equal "\"C:/Ruby 1.8/bin/ruby.exe\"", Gem.ruby
   ensure
     Gem.instance_variable_set("@ruby", orig_ruby)
-    Gem::ConfigMap[:bindir] = orig_bindir
-    Gem::ConfigMap[:ruby_install_name] = orig_ruby_install_name
-    Gem::ConfigMap[:EXEEXT] = orig_exe_ext
+    RbConfig::CONFIG['bindir'] = orig_bindir
+    RbConfig::CONFIG['ruby_install_name'] = orig_ruby_install_name
+    RbConfig::CONFIG['EXEEXT'] = orig_exe_ext
   end
 
   def test_self_ruby_path_without_spaces
     orig_ruby = Gem.ruby
-    orig_bindir = Gem::ConfigMap[:bindir]
-    orig_ruby_install_name = Gem::ConfigMap[:ruby_install_name]
-    orig_exe_ext = Gem::ConfigMap[:EXEEXT]
+    orig_bindir = RbConfig::CONFIG['bindir']
+    orig_ruby_install_name = RbConfig::CONFIG['ruby_install_name']
+    orig_exe_ext = RbConfig::CONFIG['EXEEXT']
 
-    Gem::ConfigMap[:bindir] = "C:/Ruby18/bin"
-    Gem::ConfigMap[:ruby_install_name] = "ruby"
-    Gem::ConfigMap[:EXEEXT] = ".exe"
+    RbConfig::CONFIG['bindir'] = "C:/Ruby18/bin"
+    RbConfig::CONFIG['ruby_install_name'] = "ruby"
+    RbConfig::CONFIG['EXEEXT'] = ".exe"
     Gem.instance_variable_set("@ruby", nil)
 
     assert_equal "C:/Ruby18/bin/ruby.exe", Gem.ruby
   ensure
     Gem.instance_variable_set("@ruby", orig_ruby)
-    Gem::ConfigMap[:bindir] = orig_bindir
-    Gem::ConfigMap[:ruby_install_name] = orig_ruby_install_name
-    Gem::ConfigMap[:EXEEXT] = orig_exe_ext
+    RbConfig::CONFIG['bindir'] = orig_bindir
+    RbConfig::CONFIG['ruby_install_name'] = orig_ruby_install_name
+    RbConfig::CONFIG['EXEEXT'] = orig_exe_ext
+  end
+
+  def test_self_ruby_api_version
+    orig_ruby_version, RbConfig::CONFIG['ruby_version'] = RbConfig::CONFIG['ruby_version'], '1.2.3'
+
+    Gem.instance_variable_set :@ruby_api_version, nil
+
+    assert_equal '1.2.3', Gem.ruby_api_version
+  ensure
+    Gem.instance_variable_set :@ruby_api_version, nil
+
+    RbConfig::CONFIG['ruby_version'] = orig_ruby_version
   end
 
   def test_self_ruby_version_1_8_5
@@ -788,7 +827,7 @@ class TestGem < Gem::TestCase
 
   def test_self_user_dir
     parts = [@userhome, '.gem', Gem.ruby_engine]
-    parts << Gem::ConfigMap[:ruby_version] unless Gem::ConfigMap[:ruby_version].empty?
+    parts << RbConfig::CONFIG['ruby_version'] unless RbConfig::CONFIG['ruby_version'].empty?
 
     assert_equal File.join(parts), Gem.user_dir
   end
@@ -820,6 +859,7 @@ class TestGem < Gem::TestCase
   end
 
   def test_self_needs_picks_up_unresolved_deps
+    skip 'loading from unsafe file' if RUBY_VERSION <= "1.8.7"
     save_loaded_features do
       util_clear_gems
       a = util_spec "a", "1"
@@ -912,6 +952,7 @@ class TestGem < Gem::TestCase
   end
 
   def test_load_plugins
+    skip 'Insecure operation - chdir' if RUBY_VERSION <= "1.8.7"
     plugin_path = File.join "lib", "rubygems_plugin.rb"
 
     Dir.chdir @tempdir do
@@ -920,13 +961,13 @@ class TestGem < Gem::TestCase
         fp.puts "class TestGem; PLUGINS_LOADED << 'plugin'; end"
       end
 
-      foo1 = quick_spec 'foo', '1' do |s|
+      foo1 = util_spec 'foo', '1' do |s|
         s.files << plugin_path
       end
 
       install_gem foo1
 
-      foo2 = quick_spec 'foo', '2' do |s|
+      foo2 = util_spec 'foo', '2' do |s|
         s.files << plugin_path
       end
 
@@ -1065,6 +1106,7 @@ class TestGem < Gem::TestCase
   end
 
   def test_auto_activation_of_detected_gemdeps_file
+    skip 'Insecure operation - chdir' if RUBY_VERSION <= "1.8.7"
     util_clear_gems
 
     a = new_spec "a", "1", nil, "lib/a.rb"
@@ -1083,7 +1125,7 @@ class TestGem < Gem::TestCase
 
     ENV['RUBYGEMS_GEMDEPS'] = "-"
 
-    assert_equal [a,b,c], Gem.detect_gemdeps
+    assert_equal [a,b,c], Gem.detect_gemdeps.sort_by { |s| s.name }
   end
 
   LIB_PATH = File.expand_path "../../../lib".untaint, __FILE__.untaint
@@ -1181,6 +1223,120 @@ class TestGem < Gem::TestCase
     assert_equal nil, Gem.find_unresolved_default_spec("README")
   end
 
+  def test_default_gems_use_full_paths
+    begin
+      if defined?(RUBY_ENGINE) then
+        engine = RUBY_ENGINE
+        Object.send :remove_const, :RUBY_ENGINE
+      end
+      Object.const_set :RUBY_ENGINE, 'ruby'
+
+      refute Gem.default_gems_use_full_paths?
+    ensure
+      Object.send :remove_const, :RUBY_ENGINE
+      Object.const_set :RUBY_ENGINE, engine if engine
+    end
+
+    begin
+      if defined?(RUBY_ENGINE) then
+        engine = RUBY_ENGINE
+        Object.send :remove_const, :RUBY_ENGINE
+      end
+      Object.const_set :RUBY_ENGINE, 'jruby'
+      assert Gem.default_gems_use_full_paths?
+    ensure
+      Object.send :remove_const, :RUBY_ENGINE
+      Object.const_set :RUBY_ENGINE, engine if engine
+    end
+  end
+
+  def test_use_gemdeps
+    rubygems_gemdeps, ENV['RUBYGEMS_GEMDEPS'] = ENV['RUBYGEMS_GEMDEPS'], nil
+
+    spec = util_spec 'a', 1
+
+    refute spec.activated?
+
+    open 'Gemfile', 'w' do |io|
+      io.write 'gem "a"'
+    end
+
+    Gem.use_gemdeps
+
+    refute spec.activated?
+  ensure
+    ENV['RUBYGEMS_GEMDEPS'] = rubygems_gemdeps
+  end
+
+  def test_use_gemdeps_automatic
+    skip 'Insecure operation - chdir' if RUBY_VERSION <= "1.8.7"
+    rubygems_gemdeps, ENV['RUBYGEMS_GEMDEPS'] = ENV['RUBYGEMS_GEMDEPS'], '-'
+
+    spec = util_spec 'a', 1
+
+    refute spec.activated?
+
+    open 'Gemfile', 'w' do |io|
+      io.write 'gem "a"'
+    end
+
+    Gem.use_gemdeps
+
+    assert spec.activated?
+  ensure
+    ENV['RUBYGEMS_GEMDEPS'] = rubygems_gemdeps
+  end
+
+  def test_use_gemdeps_disabled
+    rubygems_gemdeps, ENV['RUBYGEMS_GEMDEPS'] = ENV['RUBYGEMS_GEMDEPS'], ''
+
+    spec = util_spec 'a', 1
+
+    refute spec.activated?
+
+    open 'Gemfile', 'w' do |io|
+      io.write 'gem "a"'
+    end
+
+    Gem.use_gemdeps
+
+    refute spec.activated?
+  ensure
+    ENV['RUBYGEMS_GEMDEPS'] = rubygems_gemdeps
+  end
+
+  def test_use_gemdeps_specific
+    skip 'Insecure operation - read' if RUBY_VERSION <= "1.8.7"
+    rubygems_gemdeps, ENV['RUBYGEMS_GEMDEPS'] = ENV['RUBYGEMS_GEMDEPS'], 'x'
+
+    spec = util_spec 'a', 1
+
+    refute spec.activated?
+
+    open 'x', 'w' do |io|
+      io.write 'gem "a"'
+    end
+
+    Gem.use_gemdeps
+
+    assert spec.activated?
+  ensure
+    ENV['RUBYGEMS_GEMDEPS'] = rubygems_gemdeps
+  end
+
+  def ruby_install_name name
+    orig_RUBY_INSTALL_NAME = RbConfig::CONFIG['ruby_install_name']
+    RbConfig::CONFIG['ruby_install_name'] = name
+
+    yield
+  ensure
+    if orig_RUBY_INSTALL_NAME then
+      RbConfig::CONFIG['ruby_install_name'] = orig_RUBY_INSTALL_NAME
+    else
+      RbConfig::CONFIG.delete 'ruby_install_name'
+    end
+  end
+
   def with_plugin(path)
     test_plugin_path = File.expand_path("test/rubygems/plugin/#{path}",
                                         @@project_dir)
@@ -1209,7 +1365,7 @@ class TestGem < Gem::TestCase
   end
 
   def util_exec_gem
-    spec, _ = quick_spec 'a', '4' do |s|
+    spec, _ = util_spec 'a', '4' do |s|
       s.executables = ['exec', 'abin']
     end
 

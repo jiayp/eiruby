@@ -31,8 +31,113 @@
 #include "internal.h"
 #include <ctype.h>
 
-extern st_table *rb_class_tbl;
+int rb_vm_add_root_module(ID id, VALUE module);
+
+
 #define id_attached id__attached__
+
+void
+rb_class_subclass_add(VALUE super, VALUE klass)
+{
+    rb_subclass_entry_t *entry, *head;
+
+    if (super && super != Qundef) {
+	entry = malloc(sizeof(*entry));
+	entry->klass = klass;
+	entry->next = NULL;
+
+	head = RCLASS_EXT(super)->subclasses;
+	if (head) {
+	    entry->next = head;
+	    RCLASS_EXT(head->klass)->parent_subclasses = &entry->next;
+	}
+
+	RCLASS_EXT(super)->subclasses = entry;
+	RCLASS_EXT(klass)->parent_subclasses = &RCLASS_EXT(super)->subclasses;
+    }
+}
+
+static void
+rb_module_add_to_subclasses_list(VALUE module, VALUE iclass)
+{
+    rb_subclass_entry_t *entry, *head;
+
+    entry = malloc(sizeof(*entry));
+    entry->klass = iclass;
+    entry->next = NULL;
+
+    head = RCLASS_EXT(module)->subclasses;
+    if (head) {
+	entry->next = head;
+	RCLASS_EXT(head->klass)->module_subclasses = &entry->next;
+    }
+
+    RCLASS_EXT(module)->subclasses = entry;
+    RCLASS_EXT(iclass)->module_subclasses = &RCLASS_EXT(module)->subclasses;
+}
+
+void
+rb_class_remove_from_super_subclasses(VALUE klass)
+{
+    rb_subclass_entry_t *entry;
+
+    if (RCLASS_EXT(klass)->parent_subclasses) {
+	entry = *RCLASS_EXT(klass)->parent_subclasses;
+
+	*RCLASS_EXT(klass)->parent_subclasses = entry->next;
+	if (entry->next) {
+	    RCLASS_EXT(entry->next->klass)->parent_subclasses = RCLASS_EXT(klass)->parent_subclasses;
+	}
+	free(entry);
+    }
+
+    RCLASS_EXT(klass)->parent_subclasses = NULL;
+}
+
+void
+rb_class_remove_from_module_subclasses(VALUE klass)
+{
+    rb_subclass_entry_t *entry;
+
+    if (RCLASS_EXT(klass)->module_subclasses) {
+	entry = *RCLASS_EXT(klass)->module_subclasses;
+	*RCLASS_EXT(klass)->module_subclasses = entry->next;
+
+	if (entry->next) {
+	    RCLASS_EXT(entry->next->klass)->module_subclasses = RCLASS_EXT(klass)->module_subclasses;
+	}
+
+	free(entry);
+    }
+
+    RCLASS_EXT(klass)->module_subclasses = NULL;
+}
+
+void
+rb_class_foreach_subclass(VALUE klass, void(*f)(VALUE))
+{
+    rb_subclass_entry_t *cur = RCLASS_EXT(klass)->subclasses;
+
+    /* do not be tempted to simplify this loop into a for loop, the order of
+       operations is important here if `f` modifies the linked list */
+    while (cur) {
+	VALUE curklass = cur->klass;
+	cur = cur->next;
+	f(curklass);
+    }
+}
+
+void
+rb_class_detach_subclasses(VALUE klass)
+{
+    rb_class_foreach_subclass(klass, rb_class_remove_from_super_subclasses);
+}
+
+void
+rb_class_detach_module_subclasses(VALUE klass)
+{
+    rb_class_foreach_subclass(klass, rb_class_remove_from_module_subclasses);
+}
 
 /**
  * Allocates a struct RClass for a new class.
@@ -53,10 +158,16 @@ class_alloc(VALUE flags, VALUE klass)
     obj->ptr = ALLOC(rb_classext_t);
     RCLASS_IV_TBL(obj) = 0;
     RCLASS_CONST_TBL(obj) = 0;
-    RCLASS_M_TBL(obj) = 0;
+    RCLASS_M_TBL_WRAPPER(obj) = 0;
     RCLASS_SET_SUPER((VALUE)obj, 0);
     RCLASS_ORIGIN(obj) = (VALUE)obj;
     RCLASS_IV_INDEX_TBL(obj) = 0;
+
+    RCLASS_EXT(obj)->subclasses = NULL;
+    RCLASS_EXT(obj)->parent_subclasses = NULL;
+    RCLASS_EXT(obj)->module_subclasses = NULL;
+    RCLASS_SERIAL(obj) = rb_next_class_serial();
+
     RCLASS_REFINED_CLASS(obj) = Qnil;
     RCLASS_EXT(obj)->allocator = 0;
     return (VALUE)obj;
@@ -78,7 +189,7 @@ rb_class_boot(VALUE super)
     VALUE klass = class_alloc(T_CLASS, rb_cClass);
 
     RCLASS_SET_SUPER(klass, super);
-    RCLASS_M_TBL(klass) = st_init_numtable();
+    RCLASS_M_TBL_INIT(klass);
 
     OBJ_INFECT(klass, super);
     return (VALUE)klass;
@@ -121,21 +232,23 @@ rb_class_new(VALUE super)
     return rb_class_boot(super);
 }
 
-static NODE*
-rewrite_cref_stack(NODE *node, VALUE old_klass, VALUE new_klass)
+static void
+rewrite_cref_stack(NODE *node, VALUE old_klass, VALUE new_klass, NODE **new_cref_ptr)
 {
     NODE *new_node;
-    if (!node) {
-	return NULL;
-    }
-    if (node->nd_clss == old_klass) {
-	new_node = NEW_CREF(new_klass);
-	new_node->nd_next = node->nd_next;
-    } else {
+    while (node) {
+	if (node->nd_clss == old_klass) {
+	    new_node = NEW_CREF(new_klass);
+	    RB_OBJ_WRITE(new_node, &new_node->nd_next, node->nd_next);
+	    *new_cref_ptr = new_node;
+	    return;
+	}
 	new_node = NEW_CREF(node->nd_clss);
-	new_node->nd_next = rewrite_cref_stack(node->nd_next, old_klass, new_klass);
+	node = node->nd_next;
+	*new_cref_ptr = new_node;
+	new_cref_ptr = &new_node->nd_next;
     }
-    return new_node;
+    *new_cref_ptr = NULL;
 }
 
 static void
@@ -144,9 +257,11 @@ clone_method(VALUE klass, ID mid, const rb_method_entry_t *me)
     VALUE newiseqval;
     if (me->def && me->def->type == VM_METHOD_TYPE_ISEQ) {
 	rb_iseq_t *iseq;
+	NODE *new_cref;
 	newiseqval = rb_iseq_clone(me->def->body.iseq->self, klass);
 	GetISeqPtr(newiseqval, iseq);
-	OBJ_WRITE(iseq->self, &iseq->cref_stack, rewrite_cref_stack(me->def->body.iseq->cref_stack, me->klass, klass));
+	rewrite_cref_stack(me->def->body.iseq->cref_stack, me->klass, klass, &new_cref);
+	RB_OBJ_WRITE(iseq->self, &iseq->cref_stack, new_cref);
 	rb_add_method(klass, mid, VM_METHOD_TYPE_ISEQ, iseq, me->flag);
 	RB_GC_GUARD(newiseqval);
     }
@@ -172,8 +287,8 @@ clone_const(ID key, const rb_const_entry_t *ce, struct clone_const_arg *arg)
 {
     rb_const_entry_t *nce = ALLOC(rb_const_entry_t);
     MEMCPY(nce, ce, rb_const_entry_t, 1);
-    OBJ_WRITTEN(arg->klass, Qundef, ce->value);
-    OBJ_WRITTEN(arg->klass, Qundef, ce->file);
+    RB_OBJ_WRITTEN(arg->klass, Qundef, ce->value);
+    RB_OBJ_WRITTEN(arg->klass, Qundef, ce->file);
 
     st_insert(arg->tbl, key, (st_data_t)nce);
     return ST_CONTINUE;
@@ -238,10 +353,10 @@ rb_mod_init_copy(VALUE clone, VALUE orig)
 	st_foreach(RCLASS_CONST_TBL(orig), clone_const_i, (st_data_t)&arg);
     }
     if (RCLASS_M_TBL(orig)) {
-	if (RCLASS_M_TBL(clone)) {
-	    rb_free_m_table(RCLASS_M_TBL(clone));
+	if (RCLASS_M_TBL_WRAPPER(clone)) {
+	    rb_free_m_tbl_wrapper(RCLASS_M_TBL_WRAPPER(clone));
 	}
-	RCLASS_M_TBL(clone) = st_init_numtable();
+	RCLASS_M_TBL_INIT(clone);
 	st_foreach(RCLASS_M_TBL(orig), clone_method_i, (st_data_t)clone);
     }
 
@@ -287,7 +402,7 @@ rb_singleton_class_clone_and_attach(VALUE obj, VALUE attach)
 	if (attach != Qundef) {
 	    rb_singleton_class_attached(clone, attach);
 	}
-	RCLASS_M_TBL(clone) = st_init_numtable();
+	RCLASS_M_TBL_INIT(clone);
 	st_foreach(RCLASS_M_TBL(klass), clone_method_i, (st_data_t)clone);
 	rb_singleton_class_attached(RBASIC(clone)->klass, clone);
 	FL_SET(clone, FL_SINGLETON);
@@ -404,12 +519,10 @@ make_singleton_class(VALUE obj)
 static VALUE
 boot_defclass(const char *name, VALUE super)
 {
-    extern st_table *rb_class_tbl;
     VALUE obj = rb_class_boot(super);
     ID id = rb_intern(name);
 
     rb_name_class(obj, id);
-    st_add_direct(rb_class_tbl, id, obj);
     rb_const_set((rb_cObject ? rb_cObject : obj), id, obj);
     return obj;
 }
@@ -530,7 +643,7 @@ rb_define_class(const char *name, VALUE super)
 	rb_warn("no super class for `%s', Object assumed", name);
     }
     klass = rb_define_class_id(id, super);
-    st_add_direct(rb_class_tbl, id, klass);
+    rb_vm_add_root_module(id, klass);
     rb_name_class(klass, id);
     rb_const_set(rb_cObject, id, klass);
     rb_class_inherited(super, klass);
@@ -610,9 +723,7 @@ VALUE
 rb_module_new(void)
 {
     VALUE mdl = class_alloc(T_MODULE, rb_cModule);
-
-    RCLASS_M_TBL(mdl) = st_init_numtable();
-
+    RCLASS_M_TBL_INIT(mdl);
     return (VALUE)mdl;
 }
 
@@ -641,7 +752,7 @@ rb_define_module(const char *name)
 	rb_raise(rb_eTypeError, "%s is not a module", rb_obj_classname(module));
     }
     module = rb_define_module_id(id);
-    st_add_direct(rb_class_tbl, id, module);
+    rb_vm_add_root_module(id, module);
     rb_const_set(rb_cObject, id, module);
 
     return module;
@@ -690,7 +801,8 @@ rb_include_class_new(VALUE module, VALUE super)
     RCLASS_IV_TBL(klass) = RCLASS_IV_TBL(module);
     RCLASS_CONST_TBL(klass) = RCLASS_CONST_TBL(module);
 
-    RCLASS_M_TBL(OBJ_WB_UNPROTECT(klass)) = RCLASS_M_TBL(OBJ_WB_UNPROTECT(RCLASS_ORIGIN(module)));
+    RCLASS_M_TBL_WRAPPER(OBJ_WB_UNPROTECT(klass)) =
+	RCLASS_M_TBL_WRAPPER(OBJ_WB_UNPROTECT(RCLASS_ORIGIN(module)));
 
     RCLASS_SET_SUPER(klass, super);
     if (RB_TYPE_P(module, T_ICLASS)) {
@@ -723,7 +835,6 @@ rb_include_module(VALUE klass, VALUE module)
     changed = include_modules_at(klass, RCLASS_ORIGIN(klass), module);
     if (changed < 0)
 	rb_raise(rb_eArgError, "cyclic include detected");
-    if (changed) rb_clear_cache();
 }
 
 static int
@@ -736,8 +847,8 @@ add_refined_method_entry_i(st_data_t key, st_data_t value, st_data_t data)
 static int
 include_modules_at(const VALUE klass, VALUE c, VALUE module)
 {
-    VALUE p;
-    int changed = 0;
+    VALUE p, iclass;
+    int method_changed = 0, constant_changed = 0;
     const st_table *const klass_m_tbl = RCLASS_M_TBL(RCLASS_ORIGIN(klass));
 
     while (module) {
@@ -751,7 +862,7 @@ include_modules_at(const VALUE klass, VALUE c, VALUE module)
 	for (p = RCLASS_SUPER(klass); p; p = RCLASS_SUPER(p)) {
 	    switch (BUILTIN_TYPE(p)) {
 	      case T_ICLASS:
-		if (RCLASS_M_TBL(p) == RCLASS_M_TBL(module)) {
+		if (RCLASS_M_TBL_WRAPPER(p) == RCLASS_M_TBL_WRAPPER(module)) {
 		    if (!superclass_seen) {
 			c = p;  /* move insertion point */
 		    }
@@ -763,7 +874,15 @@ include_modules_at(const VALUE klass, VALUE c, VALUE module)
 		break;
 	    }
 	}
-	c = RCLASS_SET_SUPER(c, rb_include_class_new(module, RCLASS_SUPER(c)));
+	iclass = rb_include_class_new(module, RCLASS_SUPER(c));
+	c = RCLASS_SET_SUPER(c, iclass);
+
+	if (BUILTIN_TYPE(module) == T_ICLASS) {
+	    rb_module_add_to_subclasses_list(RBASIC(module)->klass, iclass);
+	} else {
+	    rb_module_add_to_subclasses_list(module, iclass);
+	}
+
 	if (FL_TEST(klass, RMODULE_IS_REFINEMENT)) {
 	    VALUE refined_class =
 		rb_refinement_module_get_refined_class(klass);
@@ -773,14 +892,17 @@ include_modules_at(const VALUE klass, VALUE c, VALUE module)
 	    FL_SET(c, RMODULE_INCLUDED_INTO_REFINEMENT);
 	}
 	if (RMODULE_M_TBL(module) && RMODULE_M_TBL(module)->num_entries)
-	    changed = 1;
+	    method_changed = 1;
 	if (RMODULE_CONST_TBL(module) && RMODULE_CONST_TBL(module)->num_entries)
-	    changed = 1;
+	    constant_changed = 1;
       skip:
 	module = RCLASS_SUPER(module);
     }
 
-    return changed;
+    if (method_changed) rb_clear_method_cache_by_class(klass);
+    if (constant_changed) rb_clear_constant_cache();
+
+    return method_changed;
 }
 
 static int
@@ -830,8 +952,8 @@ rb_prepend_module(VALUE klass, VALUE module)
 	RCLASS_SET_SUPER(origin, RCLASS_SUPER(klass));
 	RCLASS_SET_SUPER(klass, origin);
 	RCLASS_ORIGIN(klass) = origin;
-	RCLASS_M_TBL(origin) = RCLASS_M_TBL(klass);
-	RCLASS_M_TBL(klass) = st_init_numtable();
+	RCLASS_M_TBL_WRAPPER(origin) = RCLASS_M_TBL_WRAPPER(klass);
+	RCLASS_M_TBL_INIT(klass);
 	st_foreach(RCLASS_M_TBL(origin), move_refined_method,
 		   (st_data_t) RCLASS_M_TBL(klass));
     }
@@ -839,7 +961,6 @@ rb_prepend_module(VALUE klass, VALUE module)
     if (changed < 0)
 	rb_raise(rb_eArgError, "cyclic prepend detected");
     if (changed) {
-	rb_clear_cache();
 	rb_vm_check_redefinition_by_prepend(klass);
     }
 }
@@ -998,6 +1119,10 @@ method_entry_i(st_data_t key, st_data_t value, st_data_t data)
     st_table *list = (st_table *)data;
     long type;
 
+    if (me && me->def->type == VM_METHOD_TYPE_REFINED) {
+	me = rb_resolve_refined_method(Qnil, me, NULL);
+	if (!me) return ST_CONTINUE;
+    }
     if (!st_lookup(list, key, 0)) {
 	if (UNDEFINED_METHOD_ENTRY_P(me)) {
 	    type = -1; /* none */
@@ -1660,8 +1785,11 @@ rb_scan_args(int argc, const VALUE *argv, const char *fmt, ...)
 	}
 	else {
 	    hash = rb_check_hash_type(last);
-	    if (!NIL_P(hash))
-		argc--;
+	    if (!NIL_P(hash)) {
+		VALUE opts = rb_extract_keywords(&hash);
+		if (!hash) argc--;
+		hash = opts ? opts : Qnil;
+	    }
 	}
     }
     /* capture leading mandatory arguments */
@@ -1723,6 +1851,119 @@ rb_scan_args(int argc, const VALUE *argv, const char *fmt, ...)
     }
 
     return argc;
+}
+
+NORETURN(static void keyword_error(const char *error, VALUE keys));
+static void
+keyword_error(const char *error, VALUE keys)
+{
+    const char *msg = "";
+    if (RARRAY_LEN(keys) == 1) {
+	keys = RARRAY_AREF(keys, 0);
+    }
+    else {
+	keys = rb_ary_join(keys, rb_usascii_str_new2(", "));
+	msg = "s";
+    }
+    rb_raise(rb_eArgError, "%s keyword%s: %"PRIsVALUE, error, msg, keys);
+}
+
+NORETURN(static void unknown_keyword_error(VALUE hash, const ID *table, int keywords));
+static void
+unknown_keyword_error(VALUE hash, const ID *table, int keywords)
+{
+    VALUE keys;
+    int i;
+    for (i = 0; i < keywords; i++) {
+	rb_hash_delete(hash, ID2SYM(table[i]));
+    }
+    keys = rb_funcall(hash, rb_intern("keys"), 0, 0);
+    if (!RB_TYPE_P(keys, T_ARRAY)) rb_raise(rb_eArgError, "unknown keyword");
+    keyword_error("unknown", keys);
+}
+
+static int
+separate_symbol(st_data_t key, st_data_t value, st_data_t arg)
+{
+    VALUE *kwdhash = (VALUE *)arg;
+
+    if (!SYMBOL_P(key)) kwdhash++;
+    if (!*kwdhash) *kwdhash = rb_hash_new();
+    rb_hash_aset(*kwdhash, (VALUE)key, (VALUE)value);
+    return ST_CONTINUE;
+}
+
+VALUE
+rb_extract_keywords(VALUE *orighash)
+{
+    VALUE parthash[2] = {0, 0};
+    VALUE hash = *orighash;
+
+    if (RHASH_EMPTY_P(hash)) {
+	*orighash = 0;
+	return hash;
+    }
+    st_foreach(rb_hash_tbl_raw(hash), separate_symbol, (st_data_t)&parthash);
+    *orighash = parthash[1];
+    return parthash[0];
+}
+
+int
+rb_get_kwargs(VALUE keyword_hash, const ID *table, int required, int optional, VALUE *values)
+{
+    int i = 0, j;
+    int rest = 0;
+    VALUE missing = Qnil;
+    st_data_t key;
+
+#define extract_kwarg(keyword, val) \
+    (key = (st_data_t)(keyword), values ? \
+     st_delete(rb_hash_tbl_raw(keyword_hash), &key, (val)) : \
+     st_lookup(rb_hash_tbl_raw(keyword_hash), key, (val)))
+
+    if (optional < 0) {
+	rest = 1;
+	optional = -1-optional;
+    }
+    if (values) {
+	for (j = 0; j < required + optional; j++) {
+	    values[j] = Qundef;
+	}
+    }
+    if (required) {
+	for (; i < required; i++) {
+	    VALUE keyword = ID2SYM(table[i]);
+	    if (keyword_hash) {
+		st_data_t val;
+		if (extract_kwarg(keyword, &val)) {
+		    if (values) values[i] = (VALUE)val;
+		    continue;
+		}
+	    }
+	    if (NIL_P(missing)) missing = rb_ary_tmp_new(1);
+	    rb_ary_push(missing, keyword);
+	}
+	if (!NIL_P(missing)) {
+	    keyword_error("missing", missing);
+	}
+    }
+    j = i;
+    if (optional && keyword_hash) {
+	for (i = 0; i < optional; i++) {
+	    st_data_t val;
+	    if (extract_kwarg(ID2SYM(table[required+i]), &val)) {
+		if (values) values[required+i] = (VALUE)val;
+		j++;
+	    }
+	}
+    }
+    if (!rest && keyword_hash) {
+	if (RHASH_SIZE(keyword_hash) > (unsigned int)j) {
+	    unknown_keyword_error(keyword_hash, table, required+optional);
+	}
+    }
+    return j;
+#undef extract_kwarg
 }
 
 /*!

@@ -140,13 +140,15 @@ var は lvalue である必要があります．
 あるのは文字列と配列くらいだと思います．
 
 ruby.hでは構造体へキャストするマクロも「RXXXXX()」(全部大文
-字にしたもの)という名前で提供されています(例: RSTRING())．
+字にしたもの)という名前で提供されています(例: RSTRING())．た
+だし、構造体への直接のアクセスはできるだけ避け，対応する
+rb_xxxx() といった関数を使うようにして下さい．例えば，配列の
+要素へアクセスする場合は，rb_ary_entry(ary, offset)，
+rb_ary_store(ary, offset, obj) を利用するようにして下さい．
 
 構造体からデータを取り出すマクロが提供されています．文字列
 strの長さを得るためには「RSTRING_LEN(str)」とし，文字列strを
-char*として得るためには「RSTRING_PTR(str)」とします．配列の
-場合には，それぞれ「RARRAY_LEN(ary)」，「RARRAY_PTR(ary)」と
-なります．
+char*として得るためには「RSTRING_PTR(str)」とします．
 
 Rubyの構造体を直接アクセスする時に気をつけなければならないこ
 とは，配列や文字列の構造体の中身は参照するだけで，直接変更し
@@ -245,6 +247,7 @@ rb_str_vcatf(VALUE str, const char* format, va_list ap)
   rb_str_cat2(str, rb_vsprintf(format, ap)) と同等である．
 
 rb_enc_str_new(const char *ptr, long len, rb_encoding *enc)
+rb_enc_str_new_cstr(const char *ptr, rb_encoding *enc)
 
   指定されたエンコーディングでRubyの文字列を生成する.
 
@@ -308,6 +311,10 @@ rb_ary_aref(argc, VALUE *argv, VALUE ary)
 rb_ary_entry(VALUE ary, long offset)
 
   ary[offset]
+
+rb_ary_store(VALUE ary, long offset, VALUE obj) ::
+
+  ary[offset] = obj
 
 rb_ary_subseq(VALUE ary, long beg, long len)
 
@@ -1619,6 +1626,22 @@ pkg_config(pkg, option=nil) ::
 
   optionが指定された場合は、上記の配列の代わりにそのオプションを
   指定して得られた出力をstripしたものを返す．
+
+= Appendix D. 世代別GC
+
+Ruby 2.1から世代別GCに対応しました。我々はこれをRGenGCと呼んでいます。
+RGenGCは、過去の拡張ライブラリに（ほぼ）互換性を保つように開発されている
+ため、拡張ライブラリ側の対応はほぼ不要です。
+
+ただし、対応をすることで性能を向上することができる可能性があります。もし
+拡張ライブラリに高い性能が必要である場合は対応を検討して下さい。
+
+とくにRARRAY_PTR()/RHASH_TBL()のようなマクロを用いてポインタに直接アクセ
+スするようなコードは書かないようにして下さい。代わりに、rb_ary_aref(),
+rb_ary_store() などの、適切な API 関数を利用するようにして下さい。
+
+そのほか、対応についての詳細は README.ext の「Appendix D. Generational
+GC」を参照して下さい。
 
 /*
  * Local variables:

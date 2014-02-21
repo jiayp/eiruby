@@ -4,6 +4,7 @@
 # See LICENSE.txt for permissions.
 #++
 
+require 'rubygems/command'
 require 'rubygems/exceptions'
 require 'rubygems/package'
 require 'rubygems/ext'
@@ -32,9 +33,9 @@ class Gem::Installer
   ENV_PATHS = %w[/usr/bin/env /bin/env]
 
   ##
-  # Raised when there is an error while building extensions.
-  #
-  class ExtensionBuildError < Gem::InstallError; end
+  # Deprecated in favor of Gem::Ext::BuildError
+
+  ExtensionBuildError = Gem::Ext::BuildError # :nodoc:
 
   include Gem::UserInteraction
 
@@ -55,6 +56,11 @@ class Gem::Installer
   # The options passed when the Gem::Installer was instantiated.
 
   attr_reader :options
+
+  ##
+  # Sets the specification for .gem-less installs.
+
+  attr_writer :spec
 
   @path_warning = false
 
@@ -206,12 +212,16 @@ class Gem::Installer
   def install
     pre_install_checks
 
+    FileUtils.rm_f File.join gem_home, 'specifications', @spec.spec_name
+
     run_pre_install_hooks
 
     # Completely remove any previous gem files
     FileUtils.rm_rf gem_dir
 
     FileUtils.mkdir_p gem_dir
+
+    spec.loaded_from = spec_file
 
     if @options[:install_as_default]
       extract_bin
@@ -229,8 +239,6 @@ class Gem::Installer
     end
 
     say spec.post_install_message unless spec.post_install_message.nil?
-
-    spec.loaded_from = spec_file
 
     Gem::Specification.add_spec spec unless Gem::Specification.include? spec
 
@@ -345,7 +353,10 @@ class Gem::Installer
 
   def write_spec
     open spec_file, 'w' do |file|
+      spec.installed_by_version = Gem.rubygems_version
+
       file.puts spec.to_ruby_for_cache
+
       file.fsync rescue nil # for filesystems without fsync(2)
     end
   end
@@ -469,7 +480,7 @@ class Gem::Installer
   #
 
   def shebang(bin_file_name)
-    ruby_name = Gem::ConfigMap[:ruby_install_name] if @env_shebang
+    ruby_name = RbConfig::CONFIG['ruby_install_name'] if @env_shebang
     path = File.join gem_dir, spec.bindir, bin_file_name
     first_line = File.open(path, "rb") {|file| file.gets}
 
@@ -482,7 +493,7 @@ class Gem::Installer
 
     if which = Gem.configuration[:custom_shebang]
       # replace bin_file_name with "ruby" to avoid endless loops
-      which = which.gsub(/ #{bin_file_name}$/," #{Gem::ConfigMap[:ruby_install_name]}")
+      which = which.gsub(/ #{bin_file_name}$/," #{RbConfig::CONFIG['ruby_install_name']}")
 
       which = which.gsub(/\$(\w+)/) do
         case $1
@@ -630,7 +641,7 @@ version = "#{Gem::Requirement.default}"
 if ARGV.first
   str = ARGV.first
   str = str.dup.force_encoding("BINARY") if str.respond_to? :force_encoding
-  if str =~ /\\A_(.*)_\\z/
+  if str =~ /\\A_(.*)_\\z/ and Gem::Version.correct?($1) then
     version = $1
     ARGV.shift
   end
@@ -667,7 +678,7 @@ TEXT
   end
 
   ##
-  # Logs the build +output+ in +build_dir+, then raises ExtensionBuildError.
+  # Logs the build +output+ in +build_dir+, then raises Gem::Ext::BuildError.
   #
   # TODO:  Delete this for RubyGems 3.  It remains for API compatibility
 

@@ -1,6 +1,7 @@
 require 'test/unit'
 require 'thread'
 require 'tmpdir'
+require 'timeout'
 require_relative '../ruby/envutil'
 
 class TestQueue < Test::Unit::TestCase
@@ -54,6 +55,13 @@ class TestQueue < Test::Unit::TestCase
     assert_equal(1, q.max)
     assert_raise(ArgumentError) { q.max = -1 }
     assert_equal(1, q.max)
+
+    before = q.max
+    q.max.times { q << 1 }
+    t1 = Thread.new { q << 1 }
+    sleep 0.01 until t1.stop?
+    q.max = q.max + 1
+    assert_equal before + 1, q.max
   end
 
   def test_queue_pop_interrupt
@@ -133,4 +141,48 @@ class TestQueue < Test::Unit::TestCase
     assert_same q, retval
   end
 
+  def test_sized_queue_throttle
+    q = SizedQueue.new(1)
+    i = 0
+    consumer = Thread.new do
+      while q.pop
+        i += 1
+        Thread.pass
+      end
+    end
+    nprod = 4
+    npush = 100
+
+    producer = nprod.times.map do
+      Thread.new do
+        npush.times { q.push(true) }
+      end
+    end
+    producer.each(&:join)
+    q.push(nil)
+    consumer.join
+    assert_equal(nprod * npush, i)
+  end
+
+  def test_queue_thread_raise
+    q = Queue.new
+    th1 = Thread.new do
+      begin
+        q.pop
+      rescue RuntimeError
+        sleep
+      end
+    end
+    th2 = Thread.new do
+      sleep 0.1
+      q.pop
+    end
+    sleep 0.1
+    th1.raise
+    sleep 0.1
+    q << :s
+    assert_nothing_raised(TimeoutError) do
+      timeout(1) { th2.join }
+    end
+  end
 end

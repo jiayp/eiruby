@@ -270,6 +270,8 @@ struct parser_params {
 
     int parser_yydebug;
 
+    int last_cr_line;
+
 #ifndef RIPPER
     /* Ruby core only */
     NODE *parser_eval_tree_begin;
@@ -3452,13 +3454,17 @@ lambda		:   {
 			lpar_beg = ++paren_nest;
 		    }
 		  f_larglist
+		    {
+			$<num>$ = ruby_sourceline;
+		    }
 		  lambda_body
 		    {
 			lpar_beg = $<num>2;
 		    /*%%%*/
-			$$ = NEW_LAMBDA($3, $4);
+			$$ = NEW_LAMBDA($3, $5);
+			nd_set_line($$, $<num>4);
 		    /*%
-			$$ = dispatch2(lambda, $3, $4);
+			$$ = dispatch2(lambda, $3, $5);
 		    %*/
 			dyna_pop($<vars>1);
 		    }
@@ -3474,11 +3480,7 @@ f_larglist	: '(' f_args opt_bv_decl ')'
 		    }
 		| f_args
 		    {
-		    /*%%%*/
 			$$ = $1;
-		    /*%
-			$$ = $1;
-		    %*/
 		    }
 		;
 
@@ -4906,6 +4908,10 @@ assocs		: assoc
 assoc		: arg_value tASSOC arg_value
 		    {
 		    /*%%%*/
+			if (nd_type($1) == NODE_STR) {
+			    nd_set_type($1, NODE_LIT);
+			    $1->nd_lit = rb_fstring($1->nd_lit);
+			}
 			$$ = list_append(NEW_LIST($1), $3);
 		    /*%
 			$$ = dispatch2(assoc_new, $1, $3);
@@ -5325,6 +5331,7 @@ yycompile0(VALUE arg)
 	    ruby_coverage = coverage(ruby_sourcefile_string, ruby_sourceline);
 	}
     }
+    parser->last_cr_line = ruby_sourceline - 1;
 
     parser_prepare(parser);
     deferred_nodes = 0;
@@ -5607,9 +5614,15 @@ parser_nextc(struct parser_params *parser)
 	}
     }
     c = (unsigned char)*lex_p++;
-    if (c == '\r' && peek('\n')) {
-	lex_p++;
-	c = '\n';
+    if (c == '\r') {
+	if (peek('\n')) {
+	    lex_p++;
+	    c = '\n';
+	}
+	else if (ruby_sourceline > parser->last_cr_line) {
+	    parser->last_cr_line = ruby_sourceline;
+	    rb_compile_warn(ruby_sourcefile, ruby_sourceline, "encountered \\r in middle of line, treated as a mere space");
+	}
     }
 
     return c;
@@ -8785,7 +8798,11 @@ ID
 rb_id_attrset(ID id)
 {
     if (!is_notop_id(id)) {
-	rb_bug("rb_id_attrset: operator ID - %"PRIdVALUE, (VALUE)id);
+	switch (id) {
+	  case tAREF: case tASET:
+	    return tASET;	/* only exception */
+	}
+	rb_name_error(id, "cannot make operator ID :%s attrset", rb_id2name(id));
     }
     else {
 	int scope = (int)(id & ID_SCOPE_MASK);
@@ -8793,9 +8810,11 @@ rb_id_attrset(ID id)
 	  case ID_LOCAL: case ID_INSTANCE: case ID_GLOBAL:
 	  case ID_CONST: case ID_CLASS: case ID_JUNK:
 	    break;
+	  case ID_ATTRSET:
+	    return id;
 	  default:
-	    rb_bug("rb_id_attrset: %s ID - %"PRIdVALUE, id_type_names[scope],
-		   (VALUE)id);
+	    rb_name_error(id, "cannot make %s ID %+"PRIsVALUE" attrset",
+			  id_type_names[scope], ID2SYM(id));
 
 	}
     }
@@ -10041,8 +10060,6 @@ static const struct {
 } op_tbl[] = {
     {tDOT2,	".."},
     {tDOT3,	"..."},
-    {'+',	"+(binary)"},
-    {'-',	"-(binary)"},
     {tPOW,	"**"},
     {tDSTAR,	"**"},
     {tUPLUS,	"+@"},
@@ -10077,6 +10094,7 @@ static struct symbols {
     st_table *id_ivar2;
 #endif
     VALUE op_sym[tLAST_OP_ID];
+    int minor_marked;
 } global_symbols = {tLAST_TOKEN};
 
 static const struct st_hash_type symhash = {
@@ -10131,11 +10149,15 @@ Init_sym(void)
 }
 
 void
-rb_gc_mark_symbols(void)
+rb_gc_mark_symbols(int full_mark)
 {
-    rb_mark_tbl(global_symbols.id_str);
-    rb_gc_mark_locations(global_symbols.op_sym,
-			 global_symbols.op_sym + numberof(global_symbols.op_sym));
+    if (full_mark || global_symbols.minor_marked == 0) {
+	rb_mark_tbl(global_symbols.id_str);
+	rb_gc_mark_locations(global_symbols.op_sym,
+			     global_symbols.op_sym + numberof(global_symbols.op_sym));
+
+	if (!full_mark) global_symbols.minor_marked = 1;
+    }
 }
 #endif /* !RIPPER */
 
@@ -10190,7 +10212,7 @@ rb_enc_symname_p(const char *name, rb_encoding *enc)
 #define IDSET_ATTRSET_FOR_INTERN (~(~0U<<ID_SCOPE_MASK) & ~(1U<<ID_ATTRSET))
 
 static int
-rb_enc_symname_type(const char *name, long len, rb_encoding *enc, unsigned int allowed_atttset)
+rb_enc_symname_type(const char *name, long len, rb_encoding *enc, unsigned int allowed_attrset)
 {
     const char *m = name;
     const char *e = m + len;
@@ -10267,6 +10289,7 @@ rb_enc_symname_type(const char *name, long len, rb_encoding *enc, unsigned int a
 	if (m >= e || (*m != '_' && !rb_enc_isalpha(*m, enc) && ISASCII(*m)))
 	    return -1;
 	while (m < e && is_identchar(m, e, enc)) m += rb_enc_mbclen(m, e, enc);
+	if (m >= e) break;
 	switch (*m) {
 	  case '!': case '?':
 	    if (type == ID_GLOBAL || type == ID_CLASS || type == ID_INSTANCE) return -1;
@@ -10274,7 +10297,7 @@ rb_enc_symname_type(const char *name, long len, rb_encoding *enc, unsigned int a
 	    ++m;
 	    break;
 	  case '=':
-	    if (!(allowed_atttset & (1U << type))) return -1;
+	    if (!(allowed_attrset & (1U << type))) return -1;
 	    type = ID_ATTRSET;
 	    ++m;
 	    break;
@@ -10291,11 +10314,11 @@ rb_enc_symname2_p(const char *name, long len, rb_encoding *enc)
 }
 
 static int
-rb_str_symname_type(VALUE name, unsigned int allowed_atttset)
+rb_str_symname_type(VALUE name, unsigned int allowed_attrset)
 {
     const char *ptr = StringValuePtr(name);
     long len = RSTRING_LEN(name);
-    int type = rb_enc_symname_type(ptr, len, rb_enc_get(name), allowed_atttset);
+    int type = rb_enc_symname_type(ptr, len, rb_enc_get(name), allowed_attrset);
     RB_GC_GUARD(name);
     return type;
 }
@@ -10311,6 +10334,7 @@ static ID
 register_symid_str(ID id, VALUE str)
 {
     OBJ_FREEZE(str);
+    str = rb_fstring(str);
 
     if (RUBY_DTRACE_SYMBOL_CREATE_ENABLED()) {
 	RUBY_DTRACE_SYMBOL_CREATE(RSTRING_PTR(str), rb_sourcefile(), rb_sourceline());
@@ -10318,6 +10342,7 @@ register_symid_str(ID id, VALUE str)
 
     st_add_direct(global_symbols.sym_id, (st_data_t)str, id);
     st_add_direct(global_symbols.id_str, id, (st_data_t)str);
+    global_symbols.minor_marked = 0;
     return id;
 }
 
@@ -10384,7 +10409,8 @@ intern_str(VALUE str)
     enc = rb_enc_get(str);
     symenc = enc;
 
-    if (rb_cString && !rb_enc_asciicompat(enc)) {
+    if (!len || (rb_cString && !rb_enc_asciicompat(enc))) {
+      junk:
 	id = ID_JUNK;
 	goto new_id;
     }
@@ -10392,6 +10418,7 @@ intern_str(VALUE str)
     id = 0;
     switch (*m) {
       case '$':
+	if (len < 2) goto junk;
 	id |= ID_GLOBAL;
 	if ((mb = is_special_global_name(++m, e, enc)) != 0) {
 	    if (!--mb) symenc = rb_usascii_encoding();
@@ -10400,10 +10427,12 @@ intern_str(VALUE str)
 	break;
       case '@':
 	if (m[1] == '@') {
+	    if (len < 3) goto junk;
 	    m++;
 	    id |= ID_CLASS;
 	}
 	else {
+	    if (len < 2) goto junk;
 	    id |= ID_INSTANCE;
 	}
 	m++;
@@ -10430,6 +10459,8 @@ intern_str(VALUE str)
     }
     if (name[last] == '=') {
 	/* attribute assignment */
+	if (last > 1 && name[last-1] == '=')
+	    goto junk;
 	id = rb_intern3(name, last, enc);
 	if (id > tLAST_OP_ID && !is_attrset_id(id)) {
 	    enc = rb_enc_get(rb_id2str(id));
@@ -10514,7 +10545,9 @@ rb_id2str(ID id)
 		name[1] = 0;
 		str = rb_usascii_str_new(name, 1);
 		OBJ_FREEZE(str);
+		str = rb_fstring(str);
 		global_symbols.op_sym[i] = str;
+		global_symbols.minor_marked = 0;
 	    }
 	    return str;
 	}
@@ -10524,7 +10557,9 @@ rb_id2str(ID id)
 		if (!str) {
 		    str = rb_usascii_str_new2(op_tbl[i].name);
 		    OBJ_FREEZE(str);
+		    str = rb_fstring(str);
 		    global_symbols.op_sym[i] = str;
+		    global_symbols.minor_marked = 0;
 		}
 		return str;
 	    }
@@ -10900,6 +10935,7 @@ rb_data_type_t parser_data_type = {
 	parser_free,
 	parser_memsize,
     },
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 #ifndef RIPPER

@@ -63,6 +63,7 @@ VALUE rb_ary_dup(VALUE);
 VALUE rb_ary_resurrect(VALUE ary);
 VALUE rb_ary_to_ary(VALUE);
 VALUE rb_ary_to_s(VALUE);
+VALUE rb_ary_cat(VALUE, const VALUE *, long);
 VALUE rb_ary_push(VALUE, VALUE);
 VALUE rb_ary_pop(VALUE);
 VALUE rb_ary_shift(VALUE);
@@ -224,7 +225,7 @@ VALUE rb_fiber_yield(int argc, VALUE *args);
 VALUE rb_fiber_current(void);
 VALUE rb_fiber_alive_p(VALUE);
 /* enum.c */
-VALUE rb_enum_values_pack(int, VALUE*);
+VALUE rb_enum_values_pack(int, const VALUE*);
 /* enumerator.c */
 VALUE rb_enumeratorize(VALUE, VALUE, int, VALUE *);
 typedef VALUE rb_enumerator_size_func(VALUE, VALUE, VALUE);
@@ -289,7 +290,7 @@ void rb_check_copyable(VALUE obj, VALUE orig);
 /* eval.c */
 int rb_sourceline(void);
 const char *rb_sourcefile(void);
-VALUE rb_check_funcall(VALUE, ID, int, VALUE*);
+VALUE rb_check_funcall(VALUE, ID, int, const VALUE*);
 
 NORETURN(void rb_error_arity(int, int, int));
 #define rb_check_arity rb_check_arity /* for ifdef */
@@ -375,7 +376,8 @@ void rb_define_alloc_func(VALUE, rb_alloc_func_t);
 void rb_undef_alloc_func(VALUE);
 rb_alloc_func_t rb_get_alloc_func(VALUE);
 void rb_clear_cache(void);
-void rb_clear_cache_by_class(VALUE);
+void rb_clear_constant_cache(void);
+void rb_clear_method_cache_by_class(VALUE);
 void rb_alias(VALUE, ID, ID);
 void rb_attr(VALUE,ID,int,int,int);
 int rb_method_boundp(VALUE, ID, int);
@@ -428,6 +430,7 @@ int rb_thread_alone(void);
 DEPRECATED(void rb_thread_polling(void));
 void rb_thread_sleep(int);
 void rb_thread_sleep_forever(void);
+void rb_thread_sleep_deadly(void);
 VALUE rb_thread_stop(void);
 VALUE rb_thread_wakeup(VALUE);
 VALUE rb_thread_wakeup_alive(VALUE);
@@ -446,6 +449,7 @@ void rb_thread_atfork_before_exec(void);
 VALUE rb_exec_recursive(VALUE(*)(VALUE, VALUE, int),VALUE,VALUE);
 VALUE rb_exec_recursive_paired(VALUE(*)(VALUE, VALUE, int),VALUE,VALUE,VALUE);
 VALUE rb_exec_recursive_outer(VALUE(*)(VALUE, VALUE, int),VALUE,VALUE);
+VALUE rb_exec_recursive_paired_outer(VALUE(*)(VALUE, VALUE, int),VALUE,VALUE,VALUE);
 /* dir.c */
 VALUE rb_dir_getwd(void);
 /* file.c */
@@ -478,7 +482,12 @@ void rb_gc_call_finalizer_at_exit(void);
 VALUE rb_gc_enable(void);
 VALUE rb_gc_disable(void);
 VALUE rb_gc_start(void);
-void rb_gc_set_params(void);
+DEPRECATED(void rb_gc_set_params(void));
+VALUE rb_define_finalizer(VALUE, VALUE);
+VALUE rb_undefine_finalizer(VALUE);
+size_t rb_gc_count(void);
+size_t rb_gc_stat(VALUE);
+VALUE rb_gc_latest_gc_info(VALUE);
 /* hash.c */
 void st_foreach_safe(struct st_table *, int (*)(ANYARGS), st_data_t);
 VALUE rb_check_hash_type(VALUE);
@@ -770,6 +779,7 @@ VALUE rb_str_length(VALUE);
 long rb_str_offset(VALUE, long);
 size_t rb_str_capacity(VALUE);
 VALUE rb_str_ellipsize(VALUE, long);
+VALUE rb_str_scrub(VALUE, VALUE);
 #if defined(__GNUC__) && !defined(__PCC__)
 #define rb_str_new_cstr(str) __extension__ (	\
 {						\
@@ -848,6 +858,8 @@ VALUE rb_struct_s_members(VALUE);
 VALUE rb_struct_members(VALUE);
 VALUE rb_struct_alloc_noinit(VALUE);
 VALUE rb_struct_define_without_accessor(const char *, VALUE, rb_alloc_func_t, ...);
+VALUE rb_struct_define_without_accessor_under(VALUE outer, const char *class_name, VALUE super, rb_alloc_func_t alloc, ...);
+
 /* thread.c */
 typedef void rb_unblock_function_t(void *);
 typedef VALUE rb_blocking_function_t(void *);
@@ -876,6 +888,7 @@ struct timespec rb_time_timespec(VALUE time);
 /* variable.c */
 VALUE rb_mod_name(VALUE);
 VALUE rb_class_path(VALUE);
+VALUE rb_class_path_cached(VALUE);
 void rb_set_class_path(VALUE, VALUE, const char*);
 void rb_set_class_path_string(VALUE, VALUE, VALUE);
 VALUE rb_path_to_class(VALUE);

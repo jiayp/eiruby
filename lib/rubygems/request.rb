@@ -21,7 +21,7 @@ class Gem::Request
     @proxy_uri =
       case proxy
       when :no_proxy then nil
-      when nil then get_proxy_from_env
+      when nil       then get_proxy_from_env uri.scheme
       when URI::HTTP then proxy
       else URI.parse(proxy)
       end
@@ -48,15 +48,14 @@ class Gem::Request
       connection.key = OpenSSL::PKey::RSA.new pem
     end
 
+    store.set_default_paths
+    add_rubygems_trusted_certs(store)
     if Gem.configuration.ssl_ca_cert
       if File.directory? Gem.configuration.ssl_ca_cert
         store.add_path Gem.configuration.ssl_ca_cert
       else
         store.add_file Gem.configuration.ssl_ca_cert
       end
-    else
-      store.set_default_paths
-      add_rubygems_trusted_certs(store)
     end
     connection.cert_store = store
   rescue LoadError => e
@@ -78,8 +77,8 @@ class Gem::Request
       net_http_args += [
         @proxy_uri.host,
         @proxy_uri.port,
-        @proxy_uri.user,
-        @proxy_uri.password
+        Gem::UriFormatter.new(@proxy_uri.user).unescape,
+        Gem::UriFormatter.new(@proxy_uri.password).unescape,
       ]
     end
 
@@ -106,7 +105,8 @@ class Gem::Request
     request = @request_class.new @uri.request_uri
 
     unless @uri.nil? || @uri.user.nil? || @uri.user.empty? then
-      request.basic_auth @uri.user, @uri.password
+      request.basic_auth Gem::UriFormatter.new(@uri.user).unescape,
+                         Gem::UriFormatter.new(@uri.password).unescape
     end
 
     request.add_field 'User-Agent', @user_agent
@@ -114,8 +114,7 @@ class Gem::Request
     request.add_field 'Keep-Alive', '30'
 
     if @last_modified then
-      @last_modified = @last_modified.utc
-      request.add_field 'If-Modified-Since', @last_modified.rfc2822
+      request.add_field 'If-Modified-Since', @last_modified.httpdate
     end
 
     yield request if block_given?
@@ -203,19 +202,27 @@ class Gem::Request
   end
 
   ##
-  # Returns an HTTP proxy URI if one is set in the environment variables.
+  # Returns a proxy URI for the given +scheme+ if one is set in the
+  # environment variables.
 
-  def get_proxy_from_env
-    env_proxy = ENV['http_proxy'] || ENV['HTTP_PROXY']
+  def get_proxy_from_env scheme = 'http'
+    _scheme = scheme.downcase
+    _SCHEME = scheme.upcase
+    env_proxy = ENV["#{_scheme}_proxy"] || ENV["#{_SCHEME}_PROXY"]
 
-    return nil if env_proxy.nil? or env_proxy.empty?
+    no_env_proxy = env_proxy.nil? || env_proxy.empty?
+
+    return get_proxy_from_env 'http' if no_env_proxy and _scheme != 'http'
+    return nil                       if no_env_proxy
 
     uri = URI(Gem::UriFormatter.new(env_proxy).normalize)
 
     if uri and uri.user.nil? and uri.password.nil? then
-      # Probably we have http_proxy_* variables?
-      uri.user = Gem::UriFormatter.new(ENV['http_proxy_user'] || ENV['HTTP_PROXY_USER']).escape
-      uri.password = Gem::UriFormatter.new(ENV['http_proxy_pass'] || ENV['HTTP_PROXY_PASS']).escape
+      user     = ENV["#{_scheme}_proxy_user"] || ENV["#{_SCHEME}_PROXY_USER"]
+      password = ENV["#{_scheme}_proxy_pass"] || ENV["#{_SCHEME}_PROXY_PASS"]
+
+      uri.user     = Gem::UriFormatter.new(user).escape
+      uri.password = Gem::UriFormatter.new(password).escape
     end
 
     uri

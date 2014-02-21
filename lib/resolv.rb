@@ -166,6 +166,7 @@ class Resolv
 
   class Hosts
     begin
+      raise LoadError unless /mswin|mingw|cygwin/ =~ RUBY_PLATFORM
       require 'win32/resolv'
       DefaultFileName = Win32::Resolv.get_hosts_path
     rescue LoadError
@@ -907,7 +908,7 @@ class Resolv
           values = Array(values)
           values.each do |t|
             Numeric === t or raise ArgumentError, "#{t.inspect} is not numeric"
-            t > 0.0 or raise ArgumentError, "timeout=#{t} must be postive"
+            t > 0.0 or raise ArgumentError, "timeout=#{t} must be positive"
           end
           @timeouts = values
         else

@@ -144,7 +144,7 @@ chfunc(void *data, char *errbuf, size_t errbuf_len)
     dup2(slave,2);
     close(slave);
 #if defined(HAVE_SETEUID) || defined(HAVE_SETREUID) || defined(HAVE_SETRESUID)
-    seteuid(getuid());
+    if (seteuid(getuid())) ERROR_EXIT("seteuid()");
 #endif
 
     return rb_exec_async_signal_safe(carg->eargp, errbuf, sizeof(errbuf_len));
@@ -613,7 +613,7 @@ static void
 raise_from_check(rb_pid_t pid, int status)
 {
     const char *state;
-    char buf[1024];
+    VALUE msg;
     VALUE exc;
 
 #if defined(WIFSTOPPED)
@@ -631,8 +631,8 @@ raise_from_check(rb_pid_t pid, int status)
     else {
 	state = "exited";
     }
-    snprintf(buf, sizeof(buf), "pty - %s: %ld", state, (long)pid);
-    exc = rb_exc_new2(eChildExited, buf);
+    msg = rb_sprintf("pty - %s: %ld", state, (long)pid);
+    exc = rb_exc_new_str(eChildExited, msg);
     rb_iv_set(exc, "status", rb_last_status_get());
     rb_exc_raise(exc);
 }

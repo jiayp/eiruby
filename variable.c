@@ -21,14 +21,12 @@
 #include "id.h"
 
 st_table *rb_global_tbl;
-st_table *rb_class_tbl;
 static ID autoload, classpath, tmp_classpath, classid;
 
 void
 Init_var_tables(void)
 {
     rb_global_tbl = st_init_numtable();
-    rb_class_tbl = st_init_numtable();
     CONST_ID(autoload, "__autoload__");
     /* __classpath__: fully qualified class path */
     CONST_ID(classpath, "__classpath__");
@@ -51,7 +49,7 @@ fc_path(struct fc_result *fc, ID name)
 {
     VALUE path, tmp;
 
-    path = rb_str_dup(rb_id2str(name));
+    path = rb_id2str(name);
     while (fc) {
 	st_data_t n;
 	if (fc->track == rb_cObject) break;
@@ -135,9 +133,6 @@ find_class_path(VALUE klass, ID preferred)
     if (RCLASS_CONST_TBL(rb_cObject)) {
 	st_foreach_safe(RCLASS_CONST_TBL(rb_cObject), fc_i, (st_data_t)&arg);
     }
-    if (arg.path == 0) {
-	st_foreach_safe(rb_class_tbl, fc_i, (st_data_t)&arg);
-    }
     if (arg.path) {
 	st_data_t tmp = tmp_classpath;
 	if (!RCLASS_IV_TBL(klass)) {
@@ -177,8 +172,12 @@ classname(VALUE klass, int *permanent)
 		path = find_class_path(klass, (ID)0);
 	    }
 	    if (NIL_P(path)) {
-		if (!cid || !st_lookup(RCLASS_IV_TBL(klass), (st_data_t)tmp_classpath, &n)) {
+		if (!cid) {
 		    return Qnil;
+		}
+		if (!st_lookup(RCLASS_IV_TBL(klass), (st_data_t)tmp_classpath, &n)) {
+		    path = rb_id2str(cid);
+		    return path;
 		}
 		*permanent = 0;
 		path = (VALUE)n;
@@ -276,6 +275,18 @@ rb_class_path_no_cache(VALUE klass)
     VALUE path = rb_tmp_class_path(klass, &permanent, null_cache);
     if (!NIL_P(path)) path = rb_str_dup(path);
     return path;
+}
+
+VALUE
+rb_class_path_cached(VALUE klass)
+{
+    st_table *ivtbl = RCLASS_IV_TBL(klass);
+    st_data_t n;
+
+    if (!ivtbl) return Qnil;
+    if (st_lookup(ivtbl, (st_data_t)classpath, &n)) return (VALUE)n;
+    if (st_lookup(ivtbl, (st_data_t)tmp_classpath, &n)) return (VALUE)n;
+    return Qnil;
 }
 
 void
@@ -385,8 +396,10 @@ rb_class_name(VALUE klass)
 const char *
 rb_class2name(VALUE klass)
 {
-    VALUE name = rb_class_name(klass);
-    return RSTRING_PTR(name);
+    int permanent;
+    VALUE path = rb_tmp_class_path(rb_class_real(klass), &permanent, rb_ivar_set);
+    if (NIL_P(path)) return NULL;
+    return RSTRING_PTR(path);
 }
 
 const char *
@@ -782,8 +795,6 @@ rb_gvar_set(struct global_entry *entry, VALUE val)
     struct trace_data trace;
     struct global_variable *var = entry->var;
 
-    if (rb_safe_level() >= 4)
-	rb_raise(rb_eSecurityError, "Insecure: can't change global variable value");
     (*var->setter)(val, entry->id, var->data, var);
 
     if (var->trace && !var->block_trace) {
@@ -859,9 +870,6 @@ rb_alias_variable(ID name1, ID name2)
 {
     struct global_entry *entry1, *entry2;
     st_data_t data1;
-
-    if (rb_safe_level() >= 4)
-	rb_raise(rb_eSecurityError, "Insecure: can't alias global variable");
 
     entry2 = rb_global_entry(name2);
     if (!st_lookup(rb_global_tbl, (st_data_t)name1, &data1)) {
@@ -939,11 +947,11 @@ generic_ivar_set(VALUE obj, ID id, VALUE val)
 	tbl = st_init_numtable();
 	st_add_direct(generic_iv_tbl, (st_data_t)obj, (st_data_t)tbl);
 	st_add_direct(tbl, (st_data_t)id, (st_data_t)val);
-	if (FL_ABLE(obj)) OBJ_WRITTEN(obj, Qundef, val);
+	if (FL_ABLE(obj)) RB_OBJ_WRITTEN(obj, Qundef, val);
 	return;
     }
     st_insert((st_table *)data, (st_data_t)id, (st_data_t)val);
-    if (FL_ABLE(obj)) OBJ_WRITTEN(obj, data, val);
+    if (FL_ABLE(obj)) RB_OBJ_WRITTEN(obj, data, val);
 }
 
 static VALUE
@@ -1180,7 +1188,7 @@ rb_ivar_set(VALUE obj, ID id, VALUE val)
                 ROBJECT(obj)->as.heap.iv_index_tbl = iv_index_tbl;
             }
         }
-        OBJ_WRITE(obj, &ROBJECT_IVPTR(obj)[index], val);
+        RB_OBJ_WRITE(obj, &ROBJECT_IVPTR(obj)[index], val);
 	break;
       case T_CLASS:
       case T_MODULE:
@@ -1532,12 +1540,13 @@ static size_t
 autoload_memsize(const void *ptr)
 {
     const st_table *tbl = ptr;
-    return st_memsize(tbl);
+    return tbl ? st_memsize(tbl) : 0;
 }
 
 static const rb_data_type_t autoload_data_type = {
     "autoload",
     {autoload_mark, autoload_free, autoload_memsize,},
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 #define check_autoload_table(av) \
@@ -1588,6 +1597,7 @@ autoload_i_memsize(const void *ptr)
 static const rb_data_type_t autoload_data_i_type = {
     "autoload_i",
     {autoload_i_mark, autoload_i_free, autoload_i_memsize,},
+    NULL, NULL, RUBY_TYPED_FREE_IMMEDIATELY
 };
 
 #define check_autoload_data(av) \
@@ -1621,7 +1631,7 @@ rb_autoload(VALUE mod, ID id, const char *file)
 	if (!tbl) tbl = RCLASS_IV_TBL(mod) = st_init_numtable();
 	av = (st_data_t)TypedData_Wrap_Struct(0, &autoload_data_type, 0);
 	st_add_direct(tbl, (st_data_t)autoload, av);
-	OBJ_WRITTEN(mod, Qnil, av);
+	RB_OBJ_WRITTEN(mod, Qnil, av);
 	DATA_PTR(av) = tbl = st_init_numtable();
     }
     fn = rb_str_new2(file);
@@ -1944,7 +1954,7 @@ rb_const_remove(VALUE mod, ID id)
 		      rb_class_name(mod), QUOTE_ID(id));
     }
 
-    rb_vm_change_state();
+    rb_clear_constant_cache();
 
     val = ((rb_const_entry_t*)v)->value;
     if (val == Qundef) {
@@ -1968,6 +1978,26 @@ sv_i(st_data_t k, st_data_t v, st_data_t a)
 	}
     }
     return ST_CONTINUE;
+}
+
+static int
+rb_local_constants_i(st_data_t const_name, st_data_t const_value, st_data_t ary)
+{
+    rb_ary_push((VALUE)ary, ID2SYM((ID)const_name));
+    return ST_CONTINUE;
+}
+
+static VALUE
+rb_local_constants(VALUE mod)
+{
+    st_table *tbl = RCLASS_CONST_TBL(mod);
+    VALUE ary;
+
+    if (!tbl) return rb_ary_new2(0);
+
+    ary = rb_ary_new2(tbl->num_entries);
+    st_foreach(tbl, rb_local_constants_i, ary);
+    return ary;
 }
 
 void*
@@ -2038,7 +2068,6 @@ VALUE
 rb_mod_constants(int argc, VALUE *argv, VALUE mod)
 {
     VALUE inherit;
-    st_table *tbl;
 
     if (argc == 0) {
 	inherit = Qtrue;
@@ -2046,13 +2075,13 @@ rb_mod_constants(int argc, VALUE *argv, VALUE mod)
     else {
 	rb_scan_args(argc, argv, "01", &inherit);
     }
+
     if (RTEST(inherit)) {
-	tbl = rb_mod_const_of(mod, 0);
+	return rb_const_list(rb_mod_const_of(mod, 0));
     }
     else {
-	tbl = rb_mod_const_at(mod, 0);
+	return rb_local_constants(mod);
     }
-    return rb_const_list(tbl);
 }
 
 static int
@@ -2154,8 +2183,9 @@ rb_const_set(VALUE klass, ID id, VALUE val)
 		load = autoload_data(klass, id);
 		/* for autoloading thread, keep the defined value to autoloading storage */
 		if (load && (ele = check_autoload_data(load)) && (ele->thread == rb_thread_current())) {
-		    rb_vm_change_state();
-		    ele->value = val; /* autoload_i is shady */
+		    rb_clear_constant_cache();
+
+		    ele->value = val; /* autoload_i is non-WB-protected */
 		    return;
 		}
 		/* otherwise, allow to override */
@@ -2177,15 +2207,16 @@ rb_const_set(VALUE klass, ID id, VALUE val)
 	}
     }
 
-    rb_vm_change_state();
+    rb_clear_constant_cache();
+
 
     ce = ALLOC(rb_const_entry_t);
     MEMZERO(ce, rb_const_entry_t, 1);
     ce->flag = visibility;
     ce->line = rb_sourceline();
     st_insert(RCLASS_CONST_TBL(klass), (st_data_t)id, (st_data_t)ce);
-    OBJ_WRITE(klass, &ce->value, val);
-    OBJ_WRITE(klass, &ce->file, rb_sourcefilename());
+    RB_OBJ_WRITE(klass, &ce->value, val);
+    RB_OBJ_WRITE(klass, &ce->file, rb_sourcefilename());
 }
 
 void
@@ -2195,8 +2226,6 @@ rb_define_const(VALUE klass, const char *name, VALUE val)
 
     if (!rb_is_const_id(id)) {
 	rb_warn("rb_define_const: invalid name `%s' for constant", name);
-    }
-    if (klass == rb_cObject) {
     }
     rb_const_set(klass, id, val);
 }
@@ -2224,8 +2253,10 @@ set_const_visibility(VALUE mod, int argc, VALUE *argv, rb_const_flag_t flag)
 	VALUE val = argv[i];
 	id = rb_check_id(&val);
 	if (!id) {
-	    if (i > 0)
-		rb_clear_cache_by_class(mod);
+	    if (i > 0) {
+		rb_clear_constant_cache();
+	    }
+
 	    rb_name_error_str(val, "constant %"PRIsVALUE"::%"PRIsVALUE" not defined",
 			      rb_class_name(mod), QUOTE(val));
 	}
@@ -2234,13 +2265,14 @@ set_const_visibility(VALUE mod, int argc, VALUE *argv, rb_const_flag_t flag)
 	    ((rb_const_entry_t*)v)->flag = flag;
 	}
 	else {
-	    if (i > 0)
-		rb_clear_cache_by_class(mod);
+	    if (i > 0) {
+		rb_clear_constant_cache();
+	    }
 	    rb_name_error(id, "constant %"PRIsVALUE"::%"PRIsVALUE" not defined",
 			  rb_class_name(mod), QUOTE_ID(id));
 	}
     }
-    rb_clear_cache_by_class(mod);
+    rb_clear_constant_cache();
 }
 
 /*
@@ -2583,14 +2615,14 @@ int
 rb_st_insert_id_and_value(VALUE obj, st_table *tbl, ID key, VALUE value)
 {
     int result = st_insert(tbl, (st_data_t)key, (st_data_t)value);
-    OBJ_WRITTEN(obj, Qundef, value);
+    RB_OBJ_WRITTEN(obj, Qundef, value);
     return result;
 }
 
 static int
 tbl_copy_i(st_data_t key, st_data_t value, st_data_t data)
 {
-    OBJ_WRITTEN((VALUE)data, Qundef, (VALUE)value);
+    RB_OBJ_WRITTEN((VALUE)data, Qundef, (VALUE)value);
     return ST_CONTINUE;
 }
 

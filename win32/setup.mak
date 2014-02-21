@@ -70,11 +70,11 @@ USE_RUBYGEMS = $(USE_RUBYGEMS)
 	@echo !endif>> $(MAKEFILE)
 !endif
 
--system-vars-: -osname- -runtime-
+-system-vars-: -osname- -runtime- -headers-
 
--system-vars32-: -osname32- -runtime-
+-system-vars32-: -osname32- -runtime- -headers-
 
--system-vars64-: -osname64- -runtime-
+-system-vars64-: -osname64- -runtime- -headers-
 
 -osname32-: nul
 	@echo TARGET_OS = mswin32>>$(MAKEFILE)
@@ -100,6 +100,15 @@ int main(void) {FILE *volatile f = stdin; return 0;}
 	@$(WIN32DIR:/=\)\rtname conftest.exe >>$(MAKEFILE)
 	@$(WIN32DIR:/=\)\rm.bat conftest.*
 
+-headers-: nul
+
+check-psapi.h: nul
+	($(CC) -MD <<conftest.c psapi.lib -link && echo>>$(MAKEFILE) HAVE_PSAPI_H=1) & $(WIN32DIR:/=\)\rm.bat conftest.*
+#include <windows.h>
+#include <psapi.h>
+int main(void) {return (EnumProcesses(NULL,0,NULL) ? 0 : 1);}
+<<
+
 -version-: nul
 	@$(APPEND)
 	@$(CPP) -I$(srcdir) -I$(srcdir)/include <<"Creating $(MAKEFILE)" | findstr "=" >>$(MAKEFILE)
@@ -108,6 +117,8 @@ int main(void) {FILE *volatile f = stdin; return 0;}
 MAJOR = RUBY_API_VERSION_MAJOR
 MINOR = RUBY_API_VERSION_MINOR
 TEENY = RUBY_API_VERSION_TEENY
+RUBY_PROGRAM_VERSION = RUBY_VERSION
+RUBY_PROGRAM_RELEASE_DATE = RUBY_RELEASE_DATE
 MSC_VER = _MSC_VER
 <<
 
@@ -193,7 +204,7 @@ $(CPU) = $(PROCESSOR_LEVEL)
 # CPPFLAGS = -I. -I$$(srcdir) -I$$(srcdir)/missing -DLIBRUBY_SO=\"$$(LIBRUBY_SO)\"
 # STACK = 0x2000000
 # LDFLAGS = $$(CFLAGS) -Fm
-# XLDFLAGS = 
+# XLDFLAGS =
 # RFLAGS = -r
 # EXTLIBS =
 
